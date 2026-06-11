@@ -1,0 +1,16 @@
+{
+  "name": "OnTime — out the door, gracefully",
+  "short_name": "OnTime",
+  "description": "A gentle getting-ready timer that works backwards from when you need to leave.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#fdf3f7",
+  "theme_color": "#fdf3f7",
+  "icons": [
+    { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "./icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "./icons/icon-maskable-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ]
+}
