@@ -1,5 +1,5 @@
 /* OnTime service worker — app shell, offline-first */
-const CACHE = 'ontime-v1.0.0';
+const CACHE = 'ontime-v1.1.0';
 const SHELL = [
   './',
   './index.html',

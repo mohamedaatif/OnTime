@@ -18,12 +18,20 @@ just static files.
    projected clock window ("7:42 – 7:50"), recalculated every second. A status
    pill tells you if you're on track, cutting it close, or behind — and by how much.
 3. **Adjust on the fly** — add tasks mid-routine ("Next" or "Last"), drag ⠿ to
-   reorder, tap a task to bump its estimate or remove it, push the current task
-   to "Later", or check things off out of order.
-4. **Learn** — when you finish, you see planned vs. actual for every step, and the
+   reorder, tap a task to type/slide a new estimate or remove it, push the
+   current task to "Later", or check things off out of order. Tap the 🚪 leave
+   chip to change the leave/arrive time or travel mid-routine, or nudge the
+   whole plan ±5/15 minutes.
+4. **Life happens** — tasks can be checked off *before* the routine starts
+   ("done ahead of time", untimed). In live mode, ⏸ Pause stops the current
+   task's clock — and if the app notices you've been gone 20+ minutes, it
+   auto-pauses retroactively so a forgotten timer never counts an absence.
+5. **Gentle chimes** (🔔 toggleable) — when the current task runs over, at
+   5-minutes-to-leave, and at leave time, with light vibration where supported.
+6. **Learn** — when you finish, you see planned vs. actual for every step, and the
    app quietly updates its duration suggestions from what *actually* happened. The
-   antidote to time blindness is honest data, gently delivered.
-5. **Routines** — save a set of steps ("Work morning", "Dinner out") and reuse it
+   **My pace** page shows what each task really takes (average + recent timings).
+7. **Routines** — save a set of steps ("Work morning", "Dinner out") and reuse it
    with one tap.
 
 ## Publish to GitHub Pages

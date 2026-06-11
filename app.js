@@ -97,13 +97,17 @@ let S = load();
 function load() {
   try {
     const raw = localStorage.getItem(LS_KEY);
-    if (raw) return JSON.parse(raw);
+    if (raw) {
+      const s = JSON.parse(raw);
+      if (s.sound === undefined) s.sound = true;
+      return s;
+    }
   } catch (e) { /* fall through to fresh state */ }
   const history = {};
   for (const [name, est, icon] of SEED_PRESETS) {
     history[name.toLowerCase()] = { name, icon, estMins: est, count: 0, seed: true };
   }
-  return { events: [], routines: [], history, lastDur: 10 };
+  return { events: [], routines: [], history, lastDur: 10, sound: true };
 }
 function save() {
   // keep finished events trimmed
@@ -113,6 +117,43 @@ function save() {
     S.events = S.events.filter((e) => !drop.has(e.id));
   }
   localStorage.setItem(LS_KEY, JSON.stringify(S));
+}
+
+/* ---------------- chimes & haptics ----------------
+   iOS unlocks audio only after a user gesture, so the context is
+   created/resumed on the first touch anywhere. */
+let audioCtx = null;
+function unlockAudio() {
+  try {
+    if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+    if (audioCtx.state === 'suspended') audioCtx.resume();
+  } catch (e) { /* no audio available */ }
+}
+document.addEventListener('pointerdown', unlockAudio);
+
+function tone(freq, at, dur = 0.45, vol = 0.16) {
+  const o = audioCtx.createOscillator();
+  const g = audioCtx.createGain();
+  o.type = 'sine';
+  o.frequency.value = freq;
+  g.gain.setValueAtTime(0.0001, at);
+  g.gain.exponentialRampToValueAtTime(vol, at + 0.02);
+  g.gain.exponentialRampToValueAtTime(0.0001, at + dur);
+  o.connect(g).connect(audioCtx.destination);
+  o.start(at);
+  o.stop(at + dur + 0.05);
+}
+function chime(kind) {
+  buzz(kind === 'leave' ? [180, 90, 180] : 90);
+  if (!S.sound || !audioCtx || audioCtx.state !== 'running') return;
+  const t = audioCtx.currentTime;
+  if (kind === 'over') { tone(659, t); tone(523, t + 0.18); }                      // gentle "psst"
+  if (kind === 'warn5') { tone(784, t); tone(988, t + 0.15); }                     // heads-up
+  if (kind === 'leave') { tone(880, t); tone(1109, t + 0.16); tone(1319, t + 0.32, 0.7); } // time to go
+  if (kind === 'pop') tone(1047, t, 0.2, 0.1);                                     // toggle feedback
+}
+function buzz(pattern) {
+  if (S.sound && navigator.vibrate) { try { navigator.vibrate(pattern); } catch (e) {} }
 }
 
 /* ---------------- schedule math ---------------- */
@@ -131,6 +172,7 @@ function totalEstMins(tasks) { return tasks.reduce((s, t) => s + (t.done ? 0 : t
 function curSpentSecs(ev) {
   const cur = pendingTasks(ev)[0];
   if (!cur || ev.status !== 'active') return 0;
+  if (ev.paused) return cur.spentSecs || 0;
   return (cur.spentSecs || 0) + (Date.now() - ev.curStart) / 1000;
 }
 
@@ -190,10 +232,40 @@ function reconcileCurrent(ev) {
   if (curId !== ev.curTaskId) {
     // bank elapsed time on whichever task the clock was running against
     const old = ev.tasks.find((t) => t.id === ev.curTaskId);
-    if (old && !old.done) old.spentSecs = (old.spentSecs || 0) + (Date.now() - ev.curStart) / 1000;
+    if (old && !old.done && !ev.paused) old.spentSecs = (old.spentSecs || 0) + (Date.now() - ev.curStart) / 1000;
     ev.curTaskId = curId;
     ev.curStart = Date.now();
   }
+}
+
+function pauseEvent(ev, auto = false, asOf = Date.now()) {
+  if (ev.paused || ev.status !== 'active') return;
+  const cur = pendingTasks(ev)[0];
+  if (cur) cur.spentSecs = (cur.spentSecs || 0) + Math.max(0, asOf - ev.curStart) / 1000;
+  ev.paused = true;
+  ev.autoPaused = auto;
+  ev.curStart = Date.now();
+  save();
+}
+function resumeEvent(ev) {
+  ev.paused = false;
+  ev.autoPaused = false;
+  ev.curStart = Date.now();
+  save();
+}
+
+/** Move the whole event target (arrive/leave time) by `mins`, handling midnight rollover. */
+function shiftEventTime(ev, mins) {
+  const d = new Date(targetAt(ev).getTime() + mins * 60000);
+  ev.date = todayStr(d);
+  ev.time = `${pad2(d.getHours())}:${pad2(d.getMinutes())}`;
+  resetChimeFlags(ev);
+  save();
+}
+function resetChimeFlags(ev) {
+  const secs = (leaveAt(ev).getTime() - Date.now()) / 1000;
+  if (secs > 0) ev.chimedLeave = false;
+  if (secs > 300) ev.chimed5 = false;
 }
 
 function startEvent(ev) {
@@ -208,12 +280,17 @@ function startEvent(ev) {
 function completeTask(ev, taskId) {
   const t = ev.tasks.find((x) => x.id === taskId);
   if (!t || t.done) return;
-  if (ev.status === 'active' && ev.curTaskId === t.id) {
+  const wasCurrent = ev.status === 'active' && ev.curTaskId === t.id;
+  if (wasCurrent && !ev.paused) {
     t.spentSecs = (t.spentSecs || 0) + (Date.now() - ev.curStart) / 1000;
   }
   t.done = true;
   t.actualSecs = t.spentSecs || 0;
+  // checked off out of order (or while paused) with no real time on the
+  // clock → treat as "done ahead of time": no fake duration, no learning
+  t.untimed = !wasCurrent && t.actualSecs < 20;
   t.doneAt = Date.now();
+  buzz(35);
   reconcileCurrent(ev);
   if (pendingTasks(ev).length === 0 && ev.status === 'active') {
     finishEvent(ev);
@@ -229,6 +306,7 @@ function uncompleteTask(ev, taskId) {
   if (!t) return;
   t.done = false;
   t.actualSecs = null;
+  t.untimed = false;
   reconcileCurrent(ev);
   save();
 }
@@ -243,17 +321,20 @@ function finishEvent(ev) {
 /** The quiet superpower: remember how long things ACTUALLY take. */
 function learnFromEvent(ev) {
   for (const t of ev.tasks) {
-    if (!t.done || !t.actualSecs || t.actualSecs < 20) continue;
+    if (!t.done || t.untimed || !t.actualSecs || t.actualSecs < 20) continue;
     const key = t.name.trim().toLowerCase();
     if (!key) continue;
     const h = S.history[key];
     const actualMins = Math.max(1, Math.round(t.actualSecs / 60));
     if (h && !h.seed) {
-      h.estMins = Math.max(1, Math.round((h.estMins * h.count + actualMins) / (h.count + 1)));
+      h.samples = (h.samples || []).slice(-9);
+      h.samples.push(actualMins);
+      h.estMins = Math.max(1, Math.round(h.samples.reduce((a, b) => a + b, 0) / h.samples.length));
       h.count++;
       h.icon = t.icon;
+      h.lastAt = Date.now();
     } else {
-      S.history[key] = { name: t.name.trim(), icon: t.icon, estMins: actualMins, count: 1 };
+      S.history[key] = { name: t.name.trim(), icon: t.icon, estMins: actualMins, count: 1, samples: [actualMins], lastAt: Date.now() };
     }
   }
 }
@@ -294,6 +375,7 @@ function render() {
     case 'summary': renderSummary(); break;
     case 'routines': renderRoutines(); break;
     case 'routine-edit': renderRoutineEdit(); break;
+    case 'insights': renderInsights(); break;
     default: renderHome();
   }
 }
@@ -303,10 +385,10 @@ function render() {
    =================================================================== */
 function greeting() {
   const h = new Date().getHours();
-  if (h < 5) return 'Burning the midnight oil? 🌙';
-  if (h < 12) return 'Good morning, lovely 🌷';
-  if (h < 17) return 'Good afternoon, sunshine 🌼';
-  return 'Good evening, gorgeous 🌙';
+  if (h < 5) return 'Up late 🌙';
+  if (h < 12) return 'Good morning 🌷';
+  if (h < 17) return 'Good afternoon 🌼';
+  return 'Good evening 🌙';
 }
 
 function renderHome() {
@@ -353,6 +435,19 @@ function renderHome() {
       <div class="card empty" style="padding:18px">Save a routine after you finish getting ready —<br>next time it's one tap. 🌿</div>`}
     ${S.routines.length ? `<button class="btn-link" data-act="manage-routines">Manage routines</button>` : ''}
 
+    ${Object.values(S.history).some((h) => h.count > 0) ? `
+      <div class="section-label">My pace</div>
+      <button class="event-card" data-act="insights" style="padding:14px 18px">
+        <div class="ev-row1">
+          <span class="ev-emoji" style="background:var(--lav)">⏱️</span>
+          <span style="min-width:0">
+            <div class="ev-name">What things really take</div>
+            <div class="ev-meta">learned from your timed routines</div>
+          </span>
+          <span style="margin-left:auto;color:var(--ink-faint)">›</span>
+        </div>
+      </button>` : ''}
+
     ${past.length ? `
       <div class="section-label">How it went</div>
       <div class="card" style="padding:8px 16px">
@@ -386,6 +481,7 @@ function renderHome() {
       go('edit', { id: ev.id });
     }
     if (act === 'manage-routines') go('routines');
+    if (act === 'insights') go('insights');
   };
 }
 
@@ -397,7 +493,7 @@ function homeEventCard(ev, isActive) {
   const dayLabel = ev.date === todayStr() ? '' :
     (ev.date === todayStr(new Date(Date.now() + 86400000)) ? 'tomorrow · ' : ev.date + ' · ');
   const meta = isActive
-    ? `<span class="badge ${st.cls === 'late' ? 'late' : 'ok'}" style="margin-left:0">${st.icon} ${st.label}</span>`
+    ? `<span class="badge ${st.cls === 'late' ? 'late' : 'ok'}" style="margin-left:0">${ev.paused ? '⏸ paused · ' : ''}${st.icon} ${st.label}</span>`
     : `${dayLabel}leave by <b>${fmtClock(lv)}</b> · ${pendingTasks(ev).length} tasks · ${fmtDur(totalEstMins(ev.tasks))}`;
   return `
     <button class="event-card ${isActive ? 'active-ev' : ''}" data-act="open-event" data-id="${ev.id}">
@@ -425,7 +521,9 @@ function taskRowsHTML(tasks, opts = {}) {
   return tasks.map((t) => {
     const proj = projByTask[t.id];
     let timeline = '';
-    if (t.done) {
+    if (t.done && t.untimed) {
+      timeline = `<span class="diff-under">done ahead of time ✓</span>`;
+    } else if (t.done) {
       const actual = Math.round((t.actualSecs || 0) / 60);
       const diff = actual - t.estMins;
       const diffStr = diff > 0 ? `<span class="diff-over">+${fmtDur(diff)}</span>`
@@ -444,13 +542,14 @@ function taskRowsHTML(tasks, opts = {}) {
           <div class="t-name">${esc(t.name)}</div>
           <div class="t-time">${timeline}</div>
         </div>
-        <button class="t-check" data-check aria-label="Done">✓</button>
+        ${opts.noCheck ? '' : `<button class="t-check" data-check aria-label="Done">✓</button>`}
         <div class="t-actions">
           <button class="chip" data-est="-5">−5</button>
           <button class="chip" data-est="-1">−1</button>
-          <span class="est-display" data-est-display>${fmtDur(t.estMins)}</span>
+          <input class="est-input" data-est-input type="number" inputmode="numeric" min="1" max="240" value="${t.estMins}" aria-label="Minutes">
           <button class="chip" data-est="1">＋1</button>
           <button class="chip" data-est="5">＋5</button>
+          <input class="est-slider" data-est-slider type="range" min="1" max="60" step="1" value="${clamp(t.estMins, 1, 60)}" aria-label="Minutes slider">
           ${opts.live && !t.done ? `<button class="chip chip-green on" data-donext>Do next</button>` : ''}
           <button class="chip" data-del style="color:var(--coral-deep)">Remove</button>
         </div>
@@ -475,7 +574,11 @@ function bindTaskList(listEl, tasks, ev, opts = {}) {
           return;
         }
       } else {
-        t.done = !t.done; save();
+        // planning ahead: tasks finished before the routine even starts
+        t.done = !t.done;
+        t.untimed = t.done;
+        t.actualSecs = t.done ? 0 : null;
+        save();
       }
       onChange('structure');
       return;
@@ -483,7 +586,7 @@ function bindTaskList(listEl, tasks, ev, opts = {}) {
     const estBtn = e.target.closest('[data-est]');
     if (estBtn) {
       t.estMins = clamp(t.estMins + Number(estBtn.dataset.est), 1, 240);
-      $('[data-est-display]', row).textContent = fmtDur(t.estMins);
+      syncRowEst(row, t);
       save();
       onChange('times');
       return;
@@ -513,7 +616,35 @@ function bindTaskList(listEl, tasks, ev, opts = {}) {
       if (!was) row.classList.add('expanded');
     }
   };
+  // typed minutes + slider, updated in place so the strip stays open
+  listEl.oninput = (e) => {
+    const row = e.target.closest('.t-row');
+    if (!row) return;
+    const t = tasks.find((x) => x.id === row.dataset.task);
+    if (!t) return;
+    if (e.target.matches('[data-est-input]')) {
+      const v = parseInt(e.target.value, 10);
+      if (!(v >= 1)) return;
+      t.estMins = clamp(v, 1, 240);
+      syncRowEst(row, t, 'input');
+    } else if (e.target.matches('[data-est-slider]')) {
+      t.estMins = Number(e.target.value);
+      syncRowEst(row, t, 'slider');
+    } else return;
+    save();
+    onChange('times');
+  };
   enableDrag(listEl, tasks, ev, onChange);
+}
+
+/** Refresh a row's estimate displays without re-rendering (keeps the strip open). */
+function syncRowEst(row, t, skip) {
+  const inp = $('[data-est-input]', row);
+  if (inp && skip !== 'input') inp.value = t.estMins;
+  const sl = $('[data-est-slider]', row);
+  if (sl && skip !== 'slider') sl.value = clamp(t.estMins, 1, 60);
+  const pill = $('.est-pill', row);
+  if (pill) pill.textContent = fmtDur(t.estMins);
 }
 
 /* ---------------- drag to reorder ---------------- */
@@ -594,6 +725,7 @@ function addBarHTML(opts = {}) {
       </div>
       <div class="dur-row">
         ${DUR_CHOICES.map((d) => `<button class="chip ${d === sel ? 'on' : ''}" data-dur="${d}">${d}m</button>`).join('')}
+        <input class="dur-custom" data-dur-custom type="number" inputmode="numeric" min="1" max="240" placeholder="…m" aria-label="Custom minutes">
         ${opts.live ? `
           <span class="next-toggle" data-next-toggle>
             <button data-pos="next">Next</button>
@@ -622,7 +754,19 @@ function bindAddBar(rootEl, ev, opts = {}) {
     dur = d;
     if (explicit) { durExplicit = true; S.lastDur = d; save(); }
     $$('[data-dur]', rootEl).forEach((c) => c.classList.toggle('on', Number(c.dataset.dur) === d));
+    const custom = $('[data-dur-custom]', rootEl);
+    if (custom && Number(custom.value) !== d) custom.value = '';
   }
+  rootEl.addEventListener('input', (e) => {
+    if (!e.target.matches('[data-dur-custom]')) return;
+    const v = parseInt(e.target.value, 10);
+    if (!(v >= 1)) return;
+    dur = clamp(v, 1, 240);
+    durExplicit = true;
+    S.lastDur = dur;
+    save();
+    $$('[data-dur]', rootEl).forEach((c) => c.classList.remove('on'));
+  });
   rootEl.addEventListener('click', (e) => {
     const durBtn = e.target.closest('[data-dur]');
     if (durBtn) { setDur(Number(durBtn.dataset.dur), true); return; }
@@ -721,10 +865,20 @@ function renderEdit() {
     </div>
   `;
 
+  const onListChange = (kind) => {
+    if (kind === 'times') { refreshDerived(); updateProjections(); }
+    else refresh();
+  };
+  const updateProjections = () => {
+    for (const r of computeSchedule(ev).rows) {
+      const el = $(`[data-proj="${r.t.id}"]`);
+      if (el) el.textContent = `${fmtClock(r.start)} – ${fmtClock(r.end)}`;
+    }
+  };
   const refreshList = () => {
     const sch = computeSchedule(ev);
     $('[data-tlist]').innerHTML = taskRowsHTML(ev.tasks, { schRows: sch.rows });
-    bindTaskList($('[data-tlist]'), ev.tasks, null, { onChange: refresh });
+    bindTaskList($('[data-tlist]'), ev.tasks, null, { onChange: onListChange });
     $('[data-act="start"]').disabled = !pendingTasks(ev).length;
   };
   const refreshDerived = () => {
@@ -812,8 +966,31 @@ async function keepAwake() {
   } catch (e) { /* not critical */ }
 }
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'visible' && route.page === 'live') keepAwake();
+  if (document.visibilityState === 'visible') {
+    checkAway();
+    if (route.page === 'live') keepAwake();
+  }
 });
+
+/* If the app was gone for a long while (phone pocketed, did other things),
+   don't let that gap count against the current task: bank time only up to
+   when we last saw the clock, then auto-pause. */
+const AWAY_MS = 20 * 60 * 1000;
+function checkAway() {
+  const last = S.lastTick || 0;
+  const gone = Date.now() - last;
+  if (!last || gone < AWAY_MS) return;
+  let touched = false;
+  for (const ev of S.events) {
+    if (ev.status === 'active' && !ev.paused) {
+      pauseEvent(ev, true, Math.max(ev.curStart, last));
+      touched = true;
+    }
+  }
+  S.lastTick = Date.now();
+  save();
+  if (touched && (route.page === 'live' || route.page === 'home')) render();
+}
 
 function renderLive() {
   const ev = getEvent(route.id);
@@ -824,6 +1001,7 @@ function renderLive() {
     <div class="page-top">
       <button class="btn-icon" data-act="back" aria-label="Home">‹</button>
       <h1 style="font-size:1.1rem;color:var(--ink-soft)">${ev.icon} ${esc(ev.name || 'Getting ready')}</h1>
+      <button class="btn-icon" data-act="sound" aria-label="Chimes" title="Chimes on/off">${S.sound ? '🔔' : '🔕'}</button>
       <button class="btn-icon" data-act="finish" aria-label="Finish" title="Finish now">🏁</button>
     </div>
 
@@ -832,11 +1010,28 @@ function renderLive() {
       <div class="live-count-lbl" data-countdown-lbl>until you leave</div>
       <div class="clock-strip">
         <span class="clock-bit">now <b data-now-clock></b></span>
-        <span class="clock-bit">🚪 leave <b data-leave-clock></b></span>
-        ${Number(ev.travelMins) > 0 ? `<span class="clock-bit">📍 arrive <b data-arrive-clock></b></span>` : ''}
+        <button class="clock-bit clock-edit" data-act="edit-time">🚪 leave <b data-leave-clock></b> ✎</button>
+        <span class="clock-bit" data-arrive-bit ${Number(ev.travelMins) > 0 ? '' : 'style="display:none"'}>📍 arrive <b data-arrive-clock></b></span>
       </div>
       <div><span class="status-pill ok" data-status></span></div>
       <div style="margin-top:8px;color:var(--ink-soft);font-weight:700;font-size:0.88rem" data-readyline></div>
+    </div>
+
+    <div class="card" data-time-panel style="display:none;margin-bottom:14px">
+      <div class="field-label" data-panel-label>🕐 ${Number(ev.travelMins) > 0 ? 'I need to ARRIVE by' : 'I need to be OUT THE DOOR by'}</div>
+      <input class="time-input" data-live-time type="time" value="${ev.time}">
+      <div class="field-label" style="margin-top:16px">🚗 Travel time</div>
+      <div class="chip-row">
+        ${[0, 10, 15, 20, 30, 45, 60].map((m) =>
+          `<button class="chip chip-green ${Number(ev.travelMins) === m ? 'on' : ''}" data-ltravel="${m}">${m === 0 ? 'None' : fmtDur(m)}</button>`).join('')}
+      </div>
+      <div class="field-label" style="margin-top:16px">⏰ Or nudge the whole plan</div>
+      <div class="chip-row">
+        <button class="chip" data-push="5">＋5m later</button>
+        <button class="chip" data-push="15">＋15m later</button>
+        <button class="chip" data-push="-5">−5m earlier</button>
+      </div>
+      <button class="btn btn-soft btn-big" style="margin-top:16px" data-act="close-time-panel">Done</button>
     </div>
 
     <div data-hero></div>
@@ -866,10 +1061,49 @@ function renderLive() {
 
   $('[data-done-toggle]').onclick = () => $('[data-done-section]').classList.toggle('open');
 
+  $('[data-live-time]').onchange = (e) => {
+    if (!e.target.value) return;
+    ev.time = e.target.value;
+    resetChimeFlags(ev);
+    save();
+    updateLive(ev);
+  };
+
   app.onclick = (e) => {
+    const tr = e.target.closest('[data-ltravel]');
+    if (tr) {
+      ev.travelMins = Number(tr.dataset.ltravel);
+      $$('[data-ltravel]').forEach((c) => c.classList.toggle('on', c === tr));
+      $('[data-panel-label]').textContent = ev.travelMins > 0 ? '🕐 I need to ARRIVE by' : '🕐 I need to be OUT THE DOOR by';
+      resetChimeFlags(ev);
+      save();
+      updateLive(ev);
+      return;
+    }
+    const push = e.target.closest('[data-push]');
+    if (push) {
+      shiftEventTime(ev, Number(push.dataset.push));
+      $('[data-live-time]').value = ev.time;
+      updateLive(ev);
+      return;
+    }
     const act = e.target.closest('[data-act]');
     if (!act) return;
     if (act.dataset.act === 'back') go('home');
+    if (act.dataset.act === 'sound') {
+      S.sound = !S.sound;
+      save();
+      act.textContent = S.sound ? '🔔' : '🔕';
+      unlockAudio();
+      if (S.sound) chime('pop');
+    }
+    if (act.dataset.act === 'edit-time') {
+      const panel = $('[data-time-panel]');
+      panel.style.display = panel.style.display === 'none' ? '' : 'none';
+    }
+    if (act.dataset.act === 'close-time-panel') $('[data-time-panel]').style.display = 'none';
+    if (act.dataset.act === 'hero-pause') { pauseEvent(ev); renderHero(ev); updateLive(ev); }
+    if (act.dataset.act === 'hero-resume') { resumeEvent(ev); renderHero(ev); updateLive(ev); }
     if (act.dataset.act === 'finish') {
       if (pendingTasks(ev).length === 0 || confirm('Finish now and skip the remaining tasks?')) {
         finishEvent(ev); save(); go('summary', { id: ev.id });
@@ -896,7 +1130,13 @@ function renderLive() {
     }
     if (act.dataset.act === 'hero-plus5') {
       const cur = pendingTasks(ev)[0];
-      if (cur) { cur.estMins += 5; save(); updateLive(ev); }
+      if (cur) {
+        cur.estMins += 5;
+        save();
+        const estEl = $('[data-hero-est]');
+        if (estEl) estEl.textContent = `of ${fmtDur(cur.estMins)} planned`;
+        updateLive(ev);
+      }
     }
   };
 }
@@ -904,7 +1144,32 @@ function renderLive() {
 function renderHero(ev) {
   const cur = pendingTasks(ev)[0];
   const heroEl = $('[data-hero]');
+  if (!heroEl) return;
   if (!cur) { heroEl.innerHTML = ''; return; }
+
+  if (ev.paused) {
+    const banked = Math.round(cur.spentSecs || 0);
+    heroEl.innerHTML = `
+      <div class="hero-task">
+        <div class="hero-top">
+          <span class="hero-icon">${cur.icon}</span>
+          <div style="min-width:0">
+            <div class="hero-name">${esc(cur.name)}</div>
+            <div class="hero-sub">first up when you're back · ${fmtDur(cur.estMins)} planned</div>
+          </div>
+        </div>
+        <div class="pause-banner">
+          ⏸ ${ev.autoPaused ? "Paused while you were away — that gap isn't counted." : "Paused — the timer isn't counting."}
+          ${banked >= 20 ? `<br>${fmtCount(banked)} on the clock for this so far.` : ''}
+        </div>
+        <div class="hero-btns">
+          <button class="btn btn-primary" style="flex:1" data-act="hero-resume">Resume ▶</button>
+          <button class="btn btn-ghost" data-act="hero-done">Done ✓</button>
+        </div>
+      </div>`;
+    return;
+  }
+
   heroEl.innerHTML = `
     <div class="hero-task">
       <div class="hero-top">
@@ -916,7 +1181,7 @@ function renderHero(ev) {
       </div>
       <div class="hero-timer">
         <span class="hero-elapsed" data-hero-elapsed>0:00</span>
-        <span class="hero-est">of ${fmtDur(cur.estMins)} planned</span>
+        <span class="hero-est" data-hero-est>of ${fmtDur(cur.estMins)} planned</span>
       </div>
       <div class="hero-bar"><div class="hero-fill" data-hero-fill></div></div>
       <div class="hero-btns">
@@ -924,6 +1189,7 @@ function renderHero(ev) {
         <button class="btn btn-ghost" data-act="hero-plus5">+5m</button>
         <button class="btn btn-ghost" data-act="hero-later">Later ↓</button>
       </div>
+      <button class="pause-link" data-act="hero-pause">⏸ Stepping away for a while? Pause the timer</button>
     </div>`;
 }
 
@@ -935,8 +1201,9 @@ function renderUpNext(ev) {
   $('[data-tlist]').innerHTML = upcoming.length
     ? taskRowsHTML(upcoming, { schRows: sch.rows, live: true })
     : `<div class="empty" style="padding:14px">${pend.length ? 'This is the last one — home stretch! 🏡' : ''}</div>`;
-  const liveOnChange = () => {
+  const liveOnChange = (kind) => {
     if (route.page !== 'live' || ev.status !== 'active') return;
+    if (kind === 'times') { updateLive(ev); return; } // in place — keep the strip open
     renderHero(ev); renderUpNext(ev); updateLive(ev);
   };
   bindTaskList($('[data-tlist]'), ev.tasks, ev, { onChange: liveOnChange });
@@ -962,6 +1229,11 @@ function updateLive(ev) {
   const nowEl = $('[data-now-clock]'); if (nowEl) nowEl.textContent = fmtClock(now);
   const lvEl = $('[data-leave-clock]'); if (lvEl) lvEl.textContent = fmtClock(sch.leaveAt);
   const arEl = $('[data-arrive-clock]'); if (arEl) arEl.textContent = fmtClock(sch.targetAt);
+  const arBit = $('[data-arrive-bit]'); if (arBit) arBit.style.display = Number(ev.travelMins) > 0 ? '' : 'none';
+
+  // gentle reminders — once each, re-armed if the plan moves
+  if (secsToLeave <= 300 && secsToLeave > 0 && !ev.chimed5) { ev.chimed5 = true; save(); chime('warn5'); }
+  if (secsToLeave <= 0 && !ev.chimedLeave) { ev.chimedLeave = true; save(); chime('leave'); }
 
   const st = slackStatus(sch.slackSecs);
   const pill = $('[data-status]');
@@ -972,9 +1244,11 @@ function updateLive(ev) {
 
   // hero timer
   const cur = pendingTasks(ev)[0];
-  if (cur) {
+  if (cur && !ev.paused) {
     const spent = curSpentSecs(ev);
     const over = spent > cur.estMins * 60;
+    if (over && !cur.chimedOver) { cur.chimedOver = true; save(); chime('over'); }
+    if (!over && cur.chimedOver) cur.chimedOver = false; // re-arm if +5m brought it back under
     const he = $('[data-hero-elapsed]');
     if (he) {
       he.textContent = fmtCount(spent);
@@ -1007,9 +1281,9 @@ function renderSummary() {
   const ev = getEvent(route.id);
   if (!ev) return go('home');
   const ok = ev.resultSlackSecs >= 0;
-  const doneTasks = ev.tasks.filter((t) => t.done);
+  const doneTasks = ev.tasks.filter((t) => t.done && !t.untimed);
+  const earlyTasks = ev.tasks.filter((t) => t.done && t.untimed);
   const totalActual = doneTasks.reduce((s, t) => s + (t.actualSecs || 0), 0);
-  const totalEst = doneTasks.reduce((s, t) => s + t.estMins * 60, 0);
   const maxSecs = Math.max(...doneTasks.map((t) => Math.max(t.actualSecs || 0, t.estMins * 60)), 1);
 
   app.innerHTML = `
@@ -1018,7 +1292,7 @@ function renderSummary() {
       <div class="summary-verdict ${ok ? 'ok-v' : 'late-v'}">
         ${ok ? `Out the door<br>${fmtMinsLoose(ev.resultSlackSecs)} early!` : `${fmtMinsLoose(ev.resultSlackSecs)} past leave time`}
       </div>
-      <div class="summary-sub">${esc(ev.name || 'Getting ready')} · ${ok ? 'you absolute star ⭐' : 'next time we\'ll pad the estimates 💕'}</div>
+      <div class="summary-sub">${esc(ev.name || 'Getting ready')} · ${ok ? 'right on schedule ⭐' : 'the estimates will be smarter next time 💕'}</div>
     </div>
 
     <div class="stat-tiles">
@@ -1051,7 +1325,15 @@ function renderSummary() {
         </div>`;
       }).join('')}
       <div style="color:var(--ink-faint);font-weight:600;font-size:0.82rem;margin-top:10px">
-        ✨ I've updated my suggestions — next time the estimates will know you better.
+        ✨ Suggestions updated — next time the estimates will be smarter.
+      </div>
+    </div>` : ''}
+
+    ${earlyTasks.length ? `
+    <div class="card">
+      <div class="field-label">Done ahead of time</div>
+      <div style="color:var(--ink-soft);font-weight:600;font-size:0.92rem;line-height:1.7">
+        ${earlyTasks.map((t) => `${t.icon} ${esc(t.name)}`).join(' · ')}
       </div>
     </div>` : ''}
 
@@ -1059,6 +1341,7 @@ function renderSummary() {
       <button class="btn btn-green btn-big" data-act="save-routine">Save as a routine 🌿</button>
       <div style="height:10px"></div>
       <button class="btn btn-ghost btn-big" data-act="home">Back home</button>
+      <div style="text-align:center"><button class="btn-link" data-act="insights">See how long things usually take →</button></div>
     </div>
   `;
 
@@ -1067,7 +1350,64 @@ function renderSummary() {
     const act = e.target.closest('[data-act]');
     if (!act) return;
     if (act.dataset.act === 'home') go('home');
+    if (act.dataset.act === 'insights') go('insights');
     if (act.dataset.act === 'save-routine') saveAsRoutine(ev);
+  };
+}
+
+/* ===================================================================
+   MY PACE — what things actually take, learned from real life
+   =================================================================== */
+function renderInsights() {
+  const entries = Object.values(S.history)
+    .filter((h) => h.count > 0)
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+
+  app.innerHTML = `
+    <div class="page-top">
+      <button class="btn-icon" data-act="back" aria-label="Back">‹</button>
+      <h1>My pace</h1>
+    </div>
+    ${entries.length ? `
+    <div class="card" style="padding:10px 16px">
+      ${entries.map((h, i) => `
+        <div class="ins-row" data-ins="${i}">
+          <span class="t-icon">${h.icon}</span>
+          <div class="t-main">
+            <div class="t-name">${esc(h.name)}</div>
+            <div class="t-time">timed ${h.count} time${h.count === 1 ? '' : 's'}${h.samples && h.samples.length > 1 ? ` · recently: ${h.samples.slice(-5).map((m) => m + 'm').join(', ')}` : ''}</div>
+          </div>
+          <span class="ins-avg">~${fmtDur(h.estMins)}</span>
+          <div class="ins-actions">
+            <span style="color:var(--ink-faint);font-size:0.8rem;font-weight:600;flex:1">This is what new "${esc(h.name)}" tasks will suggest.</span>
+            <button class="chip" data-forget="${esc(h.name.toLowerCase())}" style="color:var(--coral-deep)">Forget</button>
+          </div>
+        </div>`).join('')}
+    </div>
+    <div style="color:var(--ink-faint);font-weight:600;font-size:0.84rem;text-align:center;margin-top:14px;line-height:1.6">
+      Estimates are the average of recent real timings.<br>The more you use it, the more honest it gets 🌿
+    </div>` : `
+    <div class="card empty"><span class="big">⏱️</span>Nothing timed yet.<br>Finish a routine and real durations<br>will show up here.</div>`}
+  `;
+
+  app.onclick = (e) => {
+    const forget = e.target.closest('[data-forget]');
+    if (forget) {
+      if (confirm(`Forget the timing history for "${S.history[forget.dataset.forget]?.name}"?`)) {
+        delete S.history[forget.dataset.forget];
+        save();
+        renderInsights();
+      }
+      return;
+    }
+    const row = e.target.closest('.ins-row');
+    if (row) {
+      const was = row.classList.contains('expanded');
+      $$('.ins-row.expanded').forEach((r) => r.classList.remove('expanded'));
+      if (!was) row.classList.add('expanded');
+      return;
+    }
+    if (e.target.closest('[data-act="back"]')) go('home');
   };
 }
 
@@ -1142,8 +1482,9 @@ function renderRoutineEdit() {
     </div>
   `;
 
-  const refresh = () => {
-    $('[data-tlist]').innerHTML = taskRowsHTML(r.tasks, {});
+  const refresh = (kind) => {
+    if (kind === 'times') return; // est inputs update in place
+    $('[data-tlist]').innerHTML = taskRowsHTML(r.tasks, { noCheck: true });
     bindTaskList($('[data-tlist]'), r.tasks, null, { onChange: refresh });
   };
   refresh();
@@ -1178,6 +1519,11 @@ function renderRoutineEdit() {
    heartbeat
    =================================================================== */
 setInterval(() => {
+  // remember when we last saw the clock, so long absences can be detected
+  if (S.events.some((e) => e.status === 'active') && Date.now() - (S.lastTick || 0) > 10000) {
+    S.lastTick = Date.now();
+    save();
+  }
   if (route.page === 'live') {
     const ev = getEvent(route.id);
     if (ev && ev.status === 'active') updateLive(ev);
@@ -1195,4 +1541,5 @@ setInterval(() => {
   }
 }, 1000);
 
+checkAway();
 render();
