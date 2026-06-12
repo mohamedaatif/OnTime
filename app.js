@@ -1208,6 +1208,20 @@ function renderLive() {
     if (act.dataset.act === 'hero-begin') { beginRoutine(ev); structure(); }
     if (act.dataset.act === 'hero-pause') { pauseEvent(ev); renderHero(ev); updateLive(ev); }
     if (act.dataset.act === 'hero-resume') { resumeEvent(ev); renderHero(ev); updateLive(ev); }
+    if (act.dataset.act === 'hero-remove') {
+      const cur = pendingTasks(ev)[0];
+      if (cur && confirm(`Remove "${cur.name}" from this routine? Its timer will be discarded.`)) {
+        ev.tasks.splice(ev.tasks.indexOf(cur), 1);
+        reconcileCurrent(ev);
+        save();
+        // that was the last to-do and real work is done → wrap up
+        if (!pendingTasks(ev).length && ev.tasks.some((t) => t.done)) {
+          finishEvent(ev); save(); go('summary', { id: ev.id });
+          return;
+        }
+        structure();
+      }
+    }
     if (act.dataset.act === 'cancel-session') {
       if (confirm('Discard this session? It won\'t be saved to your history, and any timings from it won\'t be learned.')) {
         S.events = S.events.filter((x) => x.id !== ev.id);
@@ -1267,6 +1281,7 @@ function renderHero(ev) {
             <div class="hero-name">First up: ${esc(cur.name)}</div>
             <div class="hero-sub">${fmtDur(cur.estMins)} planned</div>
           </div>
+          <button class="hero-remove" data-act="hero-remove" aria-label="Remove this task">✕</button>
         </div>
         <div class="pause-banner waiting-banner">
           🌿 No rush yet — you don't need to start until <b>${fmtClock(startBy)}</b>.<br>
@@ -1289,6 +1304,7 @@ function renderHero(ev) {
             <div class="hero-name">${esc(cur.name)}</div>
             <div class="hero-sub">first up when you're back · ${fmtDur(cur.estMins)} planned</div>
           </div>
+          <button class="hero-remove" data-act="hero-remove" aria-label="Remove this task">✕</button>
         </div>
         <div class="pause-banner">
           ⏸ ${ev.autoPaused ? "Paused while you were away — that gap isn't counted." : "Paused — the timer isn't counting."}
@@ -1310,6 +1326,7 @@ function renderHero(ev) {
           <div class="hero-name">${esc(cur.name)}</div>
           <div class="hero-sub" data-hero-sub></div>
         </div>
+        <button class="hero-remove" data-act="hero-remove" aria-label="Remove this task">✕</button>
       </div>
       <div class="hero-timer">
         <span class="hero-elapsed" data-hero-elapsed>0:00</span>

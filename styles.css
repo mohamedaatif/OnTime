@@ -477,6 +477,16 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .hero-fill.over-f { background: linear-gradient(90deg, #f3a0b4, var(--coral)); }
 .hero-btns { display: flex; gap: 10px; margin-top: 16px; }
 .hero-btns .btn-green { flex: 1; font-size: 1.05rem; }
+.hero-remove {
+  margin-left: auto; align-self: flex-start; flex: none;
+  width: 32px; height: 32px; border-radius: 50%;
+  border: none; background: none; color: var(--ink-faint);
+  font-size: 1.05rem; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.hero-remove:active { background: var(--coral-soft); color: var(--coral-deep); }
+
 .pause-link {
   display: block; width: 100%; margin-top: 12px;
   background: none; border: none;
