@@ -131,6 +131,14 @@ function unlockAudio() {
 }
 document.addEventListener('pointerdown', unlockAudio);
 
+/* Tap anywhere outside an open editing strip to dismiss it. Runs after the
+   per-list handlers (document bubbles last), so the click that opens a strip —
+   and any tap on the controls inside it — is left alone. */
+document.addEventListener('click', (e) => {
+  if (e.target.closest('.t-row.expanded, .ins-row.expanded')) return;
+  $$('.t-row.expanded, .ins-row.expanded').forEach((r) => r.classList.remove('expanded'));
+});
+
 function tone(freq, at, dur = 0.45, vol = 0.16) {
   const o = audioCtx.createOscillator();
   const g = audioCtx.createGain();
