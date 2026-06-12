@@ -159,6 +159,7 @@ function chime(kind) {
   if (kind === 'warn5') { tone(784, t); tone(988, t + 0.15); }                     // heads-up
   if (kind === 'leave') { tone(880, t); tone(1109, t + 0.16); tone(1319, t + 0.32, 0.7); } // time to go
   if (kind === 'start') { tone(523, t); tone(659, t + 0.16); tone(784, t + 0.32, 0.6); }   // time to begin
+  if (kind === 'timer') { tone(988, t, 0.3); tone(1319, t + 0.22, 0.55); tone(988, t + 0.55, 0.3); tone(1319, t + 0.77, 0.7); } // side timer done
   if (kind === 'pop') tone(1047, t, 0.2, 0.1);                                     // toggle feedback
 }
 function buzz(pattern) {
@@ -531,6 +532,13 @@ function renderHome() {
           </div>`;
         }).join('')}
       </div>` : ''}
+
+    <div class="home-foot">
+      <button class="btn-link" data-act="export">Back up my data</button>
+      <span style="color:var(--ink-faint)">·</span>
+      <button class="btn-link" data-act="import">Restore</button>
+      <input type="file" accept=".json,application/json" data-import-file style="display:none">
+    </div>
   `;
 
   app.onclick = (e) => {
@@ -553,6 +561,8 @@ function renderHome() {
     }
     if (act === 'manage-routines') go('routines');
     if (act === 'insights') go('insights');
+    if (act === 'export') exportBackup();
+    if (act === 'import') $('[data-import-file]').click();
     if (act === 'open-summary') go('summary', { id: btn.dataset.id, replay: true });
     if (act === 'del-past') {
       const row = btn.closest('.past-row');
@@ -572,6 +582,12 @@ function renderHome() {
         renderHome();
       }
     }
+  };
+
+  $('[data-import-file]').onchange = (e) => {
+    const f = e.target.files[0];
+    if (f) importBackup(f);
+    e.target.value = '';
   };
 }
 
@@ -956,6 +972,7 @@ function renderEdit() {
       <button class="btn btn-primary btn-big" data-act="start" ${ev.tasks.length ? '' : 'disabled'}>Start getting ready 💫</button>
       <div style="text-align:center;margin-top:6px">
         <button class="btn-link" data-act="save-routine">Save these steps as a routine</button>
+        <button class="btn-link" data-act="ics">🔔 Remind me on my calendar</button>
       </div>
     </div>
   `;
@@ -985,9 +1002,10 @@ function renderEdit() {
     const goalLine = T.out
       ? `Leave home by <b>${fmtClock(sch.leaveAt)}</b> · arrive <b>${fmtClock(sch.targetAt)}</b><br>`
       : `Be ready by <b>${fmtClock(sch.targetAt)}</b><br>`;
+    const daySuffix = startBy.getTime() - Date.now() > 12 * 3600000 ? ' tomorrow' : '';
     $('[data-derived]').innerHTML = goalLine +
       (ev.tasks.length
-        ? `${fmtDur(total)} of steps → start by <b>${fmtClock(startBy)}</b>${late ? ' — that\'s already passed, hustle! 🐇' : ''}`
+        ? `${fmtDur(total)} of steps → start by <b>${fmtClock(startBy)}${daySuffix}</b>${late ? ' — that\'s already passed, hustle! 🐇' : ''}`
         : 'Add your steps below and I\'ll tell you when to start.');
     $('[data-derived]').classList.toggle('warn', late && ev.tasks.length > 0);
     $('[data-start-hint]').innerHTML = ev.tasks.length
@@ -1008,12 +1026,24 @@ function renderEdit() {
   };
   $('[data-time]').onchange = (e) => {
     if (e.target.value) ev.time = e.target.value;
+    // picking a time that's already passed today means tomorrow (an 12:30 AM
+    // bedtime set at 11 PM, tomorrow's 8 AM set tonight) — unless she
+    // explicitly chose a day herself
+    if (!ev.dayChosen) {
+      const [h, m] = ev.time.split(':').map(Number);
+      const todayTarget = new Date();
+      todayTarget.setHours(h, m, 0, 0);
+      ev.date = todayTarget.getTime() > Date.now() ? todayStr() : tomorrow;
+      $$('[data-day]').forEach((c) =>
+        c.classList.toggle('on', (c.dataset.day === 'tomorrow') === (ev.date === tomorrow)));
+    }
     save(); refreshDerived();
   };
   app.onclick = (e) => {
     const day = e.target.closest('[data-day]');
     if (day) {
       ev.date = day.dataset.day === 'tomorrow' ? tomorrow : todayStr();
+      ev.dayChosen = true; // explicit pick wins over time-based auto-roll
       $$('[data-day]').forEach((c) => c.classList.toggle('on', c === day));
       save(); refreshDerived(); return;
     }
@@ -1039,7 +1069,73 @@ function renderEdit() {
       go('live', { id: ev.id });
     }
     if (act.dataset.act === 'save-routine') saveAsRoutine(ev);
+    if (act.dataset.act === 'ics') downloadStartReminder(ev);
   };
+}
+
+/* ---------------- backup & restore ---------------- */
+function shareOrDownload(content, fname, mime) {
+  const file = new File([content], fname, { type: mime });
+  if (navigator.canShare && navigator.canShare({ files: [file] })) {
+    navigator.share({ files: [file], title: fname }).catch(() => {});
+  } else {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(new Blob([content], { type: mime }));
+    a.download = fname;
+    a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 5000);
+  }
+}
+
+function exportBackup() {
+  shareOrDownload(JSON.stringify(S, null, 2), `ontime-backup-${todayStr()}.json`, 'application/json');
+}
+
+async function importBackup(file) {
+  try {
+    const data = JSON.parse(await file.text());
+    if (!Array.isArray(data.events) || typeof data.history !== 'object') throw new Error('shape');
+    const counts = `${data.events.length} event${data.events.length === 1 ? '' : 's'}, ${(data.routines || []).length} routines, ${Object.keys(data.history || {}).length} learned tasks`;
+    if (!confirm(`Restore this backup (${counts})? It replaces everything currently on this device.`)) return;
+    S = data;
+    if (S.sound === undefined) S.sound = true;
+    save();
+    render();
+    alert('Restored! Everything is back. 🌿');
+  } catch (e) {
+    alert("Hmm, that file doesn't look like an OnTime backup.");
+  }
+}
+
+/* ---------------- calendar "start by" reminder (.ics) ---------------- */
+function icsEscape(s) {
+  return String(s).replace(/\\/g, '\\\\').replace(/[,;]/g, (m) => '\\' + m).replace(/\n/g, '\\n');
+}
+function icsLocal(d) {
+  return `${d.getFullYear()}${pad2(d.getMonth() + 1)}${pad2(d.getDate())}T${pad2(d.getHours())}${pad2(d.getMinutes())}00`;
+}
+function downloadStartReminder(ev) {
+  if (!pendingTasks(ev).length) { alert('Add some steps first — then I can work out when you need to start.'); return; }
+  const sch = computeSchedule(ev);
+  const startBy = new Date(sch.startByMs);
+  if (startBy.getTime() < Date.now()) { alert('Your start time has already passed — time to start now! 🐇'); return; }
+  const name = ev.name.trim() || 'Getting ready';
+  const T = terms(ev);
+  const ics = [
+    'BEGIN:VCALENDAR', 'VERSION:2.0', 'PRODID:-//OnTime//EN', 'CALSCALE:GREGORIAN',
+    'BEGIN:VEVENT',
+    `UID:ontime-${ev.id}-${Date.now()}@ontime`,
+    `DTSTAMP:${icsLocal(new Date())}`,
+    `DTSTART:${icsLocal(startBy)}`,
+    `DTEND:${icsLocal(sch.leaveAt)}`,
+    `SUMMARY:${icsEscape(`Start getting ready — ${name}`)}`,
+    `DESCRIPTION:${icsEscape(`${fmtDur(totalEstMins(ev.tasks))} of steps · ${T.out ? 'leave by' : 'ready by'} ${fmtClock(sch.leaveAt)} · planned in OnTime`)}`,
+    'BEGIN:VALARM', 'TRIGGER:-PT0M', 'ACTION:DISPLAY',
+    `DESCRIPTION:${icsEscape(`Time to start getting ready — ${name}`)}`,
+    'END:VALARM',
+    'END:VEVENT', 'END:VCALENDAR',
+  ].join('\r\n');
+  shareOrDownload(ics, `ontime-${name.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '') || 'reminder'}.ics`, 'text/calendar');
 }
 
 function saveAsRoutine(ev) {
@@ -1135,6 +1231,24 @@ function renderLive() {
 
     <div data-hero></div>
 
+    <div data-timers></div>
+
+    <div class="card" data-timer-panel style="display:none;margin-bottom:14px">
+      <div class="field-label">⏲ Side timer · runs on its own while you keep going, chimes when done</div>
+      <div class="add-input-row">
+        <span class="add-emoji" data-timer-emoji>⏲</span>
+        <input class="add-input" data-timer-name type="text" placeholder="Hair mask, chai, oven…" autocomplete="off">
+      </div>
+      <div class="dur-row">
+        ${[1, 2, 3, 5, 10, 15, 20, 30].map((d) => `<button class="chip ${d === 10 ? 'on' : ''}" data-tdur="${d}">${d}m</button>`).join('')}
+        <input class="dur-custom" data-tdur-custom type="number" inputmode="numeric" min="1" max="240" placeholder="…m" aria-label="Custom minutes">
+      </div>
+      <div class="hero-btns" style="margin-top:14px">
+        <button class="btn btn-green" style="flex:1" data-act="timer-start">Start timer</button>
+        <button class="btn btn-ghost" data-act="timer-close">Close</button>
+      </div>
+    </div>
+
     <div class="card live-list-card">
       <div class="section-label" style="margin:10px 4px 4px">Up next</div>
       <div class="t-list" data-tlist></div>
@@ -1156,6 +1270,7 @@ function renderLive() {
   const structure = () => {
     if (ev.status !== 'active') return; // completed via last check-off
     renderHero(ev);
+    renderTimers(ev);
     renderUpNext(ev);
     updateLive(ev);
   };
@@ -1163,6 +1278,18 @@ function renderLive() {
   bindAddBar($('[data-addbar]'), ev, { onAdd: structure });
 
   $('[data-done-toggle]').onclick = () => $('[data-done-section]').classList.toggle('open');
+
+  // side-timer panel: name → emoji preview, custom minutes
+  let timerDur = 10;
+  $('[data-timer-panel]').addEventListener('input', (e) => {
+    if (e.target.matches('[data-timer-name]')) {
+      $('[data-timer-emoji]').textContent = e.target.value.trim() ? guessIcon(e.target.value) : '⏲';
+    }
+    if (e.target.matches('[data-tdur-custom]')) {
+      const v = parseInt(e.target.value, 10);
+      if (v >= 1) { timerDur = clamp(v, 1, 240); $$('[data-tdur]').forEach((c) => c.classList.remove('on')); }
+    }
+  });
 
   $('[data-live-time]').onchange = (e) => {
     if (!e.target.value) return;
@@ -1173,6 +1300,24 @@ function renderLive() {
   };
 
   app.onclick = (e) => {
+    const td = e.target.closest('[data-tdur]');
+    if (td) {
+      timerDur = Number(td.dataset.tdur);
+      $$('[data-tdur]').forEach((c) => c.classList.toggle('on', c === td));
+      const ci = $('[data-tdur-custom]');
+      if (ci) ci.value = '';
+      return;
+    }
+    const tcancel = e.target.closest('[data-timer-cancel]');
+    if (tcancel) {
+      ev.timers = (ev.timers || []).filter((t) => t.id !== tcancel.dataset.timerCancel);
+      save(); renderTimers(ev); return;
+    }
+    const tclear = e.target.closest('[data-timer-clear]');
+    if (tclear) {
+      ev.timers = (ev.timers || []).filter((t) => t.id !== tclear.dataset.timerClear);
+      save(); renderTimers(ev); return;
+    }
     const tr = e.target.closest('[data-ltravel]');
     if (tr) {
       ev.travelMins = Number(tr.dataset.ltravel);
@@ -1205,6 +1350,28 @@ function renderLive() {
       panel.style.display = panel.style.display === 'none' ? '' : 'none';
     }
     if (act.dataset.act === 'close-time-panel') $('[data-time-panel]').style.display = 'none';
+    if (act.dataset.act === 'timer-open') {
+      const p = $('[data-timer-panel]');
+      p.style.display = p.style.display === 'none' ? '' : 'none';
+    }
+    if (act.dataset.act === 'timer-close') $('[data-timer-panel]').style.display = 'none';
+    if (act.dataset.act === 'timer-start') {
+      const nameEl = $('[data-timer-name]');
+      const tname = nameEl.value.trim();
+      (ev.timers = ev.timers || []).push({
+        id: uid(),
+        name: tname || 'Timer',
+        icon: tname ? guessIcon(tname) : '⏲',
+        endAt: Date.now() + timerDur * 60000,
+        totalMins: timerDur,
+        chimed: false,
+      });
+      save();
+      nameEl.value = '';
+      $('[data-timer-emoji]').textContent = '⏲';
+      $('[data-timer-panel]').style.display = 'none';
+      renderTimers(ev);
+    }
     if (act.dataset.act === 'hero-begin') { beginRoutine(ev); structure(); }
     if (act.dataset.act === 'hero-pause') { pauseEvent(ev); renderHero(ev); updateLive(ev); }
     if (act.dataset.act === 'hero-resume') { resumeEvent(ev); renderHero(ev); updateLive(ev); }
@@ -1342,6 +1509,25 @@ function renderHero(ev) {
     </div>`;
 }
 
+/* Passive side timers — things that run by themselves (hair mask, chai,
+   the oven) while she keeps moving through tasks. They tick on wall clock,
+   don't pause when the routine pauses, and never block the queue. */
+function renderTimers(ev) {
+  const wrap = $('[data-timers]');
+  if (!wrap) return;
+  const ts = ev.timers || [];
+  wrap.innerHTML = `
+    <div class="timers-row">
+      ${ts.map((t) => {
+        const rem = Math.ceil((t.endAt - Date.now()) / 1000);
+        return rem > 0
+          ? `<span class="timer-chip">${t.icon} ${esc(t.name)} <b data-timer-count="${t.id}">${fmtCount(rem)}</b><button class="timer-x" data-timer-cancel="${t.id}" aria-label="Cancel timer">✕</button></span>`
+          : `<button class="timer-chip done" data-timer-clear="${t.id}">${t.icon} ${esc(t.name)} done! ✓</button>`;
+      }).join('')}
+      <button class="timer-chip add-timer" data-act="timer-open">⏲ ＋ side timer</button>
+    </div>`;
+}
+
 function renderUpNext(ev) {
   const pend = pendingTasks(ev);
   const upcoming = pend.slice(1);
@@ -1453,6 +1639,22 @@ function updateLive(ev) {
     const el = $(`[data-proj="${r.t.id}"]`);
     if (el) el.textContent = `${fmtClock(r.start)} – ${fmtClock(r.end)}`;
   }
+
+  // side timers tick on wall clock — independent of pause and the task queue
+  let timerFinished = false;
+  for (const t of ev.timers || []) {
+    const rem = Math.ceil((t.endAt - Date.now()) / 1000);
+    if (rem > 0) {
+      const el = $(`[data-timer-count="${t.id}"]`);
+      if (el) el.textContent = fmtCount(rem);
+    } else if (!t.chimed) {
+      t.chimed = true;
+      save();
+      chime('timer');
+      timerFinished = true;
+    }
+  }
+  if (timerFinished) renderTimers(ev);
 }
 
 /* ===================================================================

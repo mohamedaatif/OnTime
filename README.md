@@ -35,11 +35,20 @@ just static files.
    auto-pauses retroactively so a forgotten timer never counts an absence.
 5. **Gentle chimes** (🔔 toggleable) — when the current task runs over, at
    5-minutes-to-leave, and at leave time, with light vibration where supported.
-6. **Learn** — when you finish, you see planned vs. actual for every step, and the
+6. **Side timers** ⏲ — passive things that run by themselves (hair mask, chai,
+   the oven) get their own chip with a live countdown and a distinct chime. They
+   tick on wall clock, don't pause when you pause, and never block the task queue.
+7. **Learn** — when you finish, you see planned vs. actual for every step, and the
    app quietly updates its duration suggestions from what *actually* happened. The
    **My pace** page shows what each task really takes (average + recent timings).
-7. **Routines** — save a set of steps ("Work morning", "Dinner out") and reuse it
+8. **Routines** — save a set of steps ("Work morning", "Dinner out") and reuse it
    with one tap.
+9. **Quality of life** — picking a time that's already passed today auto-rolls to
+   tomorrow (late-night bedtime planning just works); 🔔 "Remind me on my calendar"
+   exports an `.ics` with an alarm at your computed start-by time; **Back up /
+   Restore** on the home screen moves all data (routines, learned pace, history)
+   between devices as a JSON file; and a dusk dark theme follows the system
+   setting automatically.
 
 ## Publish to GitHub Pages
 
