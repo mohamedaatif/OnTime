@@ -150,6 +150,7 @@ function chime(kind) {
   if (kind === 'over') { tone(659, t); tone(523, t + 0.18); }                      // gentle "psst"
   if (kind === 'warn5') { tone(784, t); tone(988, t + 0.15); }                     // heads-up
   if (kind === 'leave') { tone(880, t); tone(1109, t + 0.16); tone(1319, t + 0.32, 0.7); } // time to go
+  if (kind === 'start') { tone(523, t); tone(659, t + 0.16); tone(784, t + 0.32, 0.6); }   // time to begin
   if (kind === 'pop') tone(1047, t, 0.2, 0.1);                                     // toggle feedback
 }
 function buzz(pattern) {
@@ -172,27 +173,35 @@ function totalEstMins(tasks) { return tasks.reduce((s, t) => s + (t.done ? 0 : t
 function curSpentSecs(ev) {
   const cur = pendingTasks(ev)[0];
   if (!cur || ev.status !== 'active') return 0;
-  if (ev.paused) return cur.spentSecs || 0;
+  if (ev.notStarted || ev.paused) return cur.spentSecs || 0;
   return (cur.spentSecs || 0) + (Date.now() - ev.curStart) / 1000;
 }
 
-/** Project the rest of the routine forward from `now`, in real clock time. */
+/** Project the rest of the routine in real clock time.
+    Normally it flows from `now`; while still waiting to start, it sits packed
+    against the deadline (from the latest safe start) so the plan looks settled
+    while the "until you start" timer counts down. */
 function computeSchedule(ev, now = new Date()) {
   const pend = pendingTasks(ev);
-  let cursor = now.getTime();
+  const lv = leaveAt(ev);
+  const remSecsFor = (t, i) =>
+    (ev.status === 'active' && !ev.notStarted && i === 0)
+      ? Math.max(0, t.estMins * 60 - curSpentSecs(ev))
+      : t.estMins * 60;
+  const totalRemMs = pend.reduce((s, t, i) => s + remSecsFor(t, i) * 1000, 0);
+  // latest moment you can begin and still finish on time
+  const startByMs = lv.getTime() - totalRemMs;
+  const originMs = ev.notStarted ? Math.max(startByMs, now.getTime()) : now.getTime();
+
+  let cursor = originMs;
   const rows = pend.map((t, i) => {
-    let remSecs = t.estMins * 60;
-    if (ev.status === 'active' && i === 0) {
-      remSecs = Math.max(0, t.estMins * 60 - curSpentSecs(ev));
-    }
     const start = cursor;
-    cursor += remSecs * 1000;
+    cursor += remSecsFor(t, i) * 1000;
     return { t, start: new Date(start), end: new Date(cursor) };
   });
   const readyAt = new Date(cursor);
-  const lv = leaveAt(ev);
   return {
-    rows, readyAt, leaveAt: lv, targetAt: targetAt(ev),
+    rows, readyAt, leaveAt: lv, targetAt: targetAt(ev), startByMs,
     slackSecs: (lv.getTime() - readyAt.getTime()) / 1000,
   };
 }
@@ -200,6 +209,36 @@ function slackStatus(slackSecs) {
   if (slackSecs >= 120) return { cls: 'ok', icon: '🌿', label: `On track · ${fmtMinsLoose(slackSecs)} to spare` };
   if (slackSecs >= 0) return { cls: 'close', icon: '🐝', label: 'Cutting it close' };
   return { cls: 'late', icon: '🌧️', label: `Behind by ${fmtMinsLoose(slackSecs)}` };
+}
+
+/* Wording adapts to the kind of deadline: a trip out the door (travel time
+   set) talks about leaving & arriving; everything else — bedtime, a call,
+   dinner on the table — just talks about being "ready by". */
+function terms(ev) {
+  const out = Number(ev.travelMins) > 0;
+  return {
+    out,
+    timeLabel: out ? '🕐 I need to ARRIVE by' : '🕐 I need to be ready by',
+    goalEmoji: out ? '🚪' : '✨',
+    goalWord: out ? 'leave' : 'ready by',     // clock chip: "🚪 leave 8:00" / "✨ ready by 10:00"
+    homeMeta: out ? 'leave by' : 'ready by',
+    countUntil: out ? 'until you leave' : "until you're ready",
+    countPast: out ? 'past your leave time' : 'past your ready time',
+    homeUntil: out ? 'until leave' : 'until ready',
+    homePast: out ? 'past leave' : 'past ready',
+    verdictHead: out ? 'Out the door' : 'All ready',
+    verdictPast: out ? 'past leave time' : 'past your ready time',
+    startTail: out ? "and you'll glide out the door." : "and you'll be ready in time.",
+  };
+}
+
+/** What the big countdown is racing toward: the start time while waiting,
+    otherwise the leave/ready time. Shared by home cards and live mode. */
+function liveCountdown(ev) {
+  const sch = computeSchedule(ev);
+  if (ev.notStarted) return { secs: (sch.startByMs - Date.now()) / 1000, until: 'until you start', past: 'start now!' };
+  const T = terms(ev);
+  return { secs: (sch.leaveAt.getTime() - Date.now()) / 1000, until: T.homeUntil, past: T.homePast };
 }
 
 /* ---------------- event mutations ---------------- */
@@ -226,7 +265,7 @@ function makeTask(name, estMins) {
 }
 
 function reconcileCurrent(ev) {
-  if (ev.status !== 'active') return;
+  if (ev.status !== 'active' || ev.notStarted) return;
   const cur = pendingTasks(ev)[0];
   const curId = cur ? cur.id : null;
   if (curId !== ev.curTaskId) {
@@ -270,6 +309,24 @@ function resetChimeFlags(ev) {
 
 function startEvent(ev) {
   ev.status = 'active';
+  ev.openedAt = Date.now();
+  // if there's real buffer before you must begin, hold in a relaxed pre-start
+  // state instead of starting the first task's clock right away
+  const startByMs = leaveAt(ev).getTime() - totalEstMins(ev.tasks) * 60000;
+  if (startByMs - Date.now() > 60000) {
+    ev.notStarted = true;
+    ev.curTaskId = null;
+    ev.curStart = null;
+  } else {
+    beginRoutine(ev);
+  }
+  save();
+}
+
+/** Leave the waiting room: the clock now runs on the first task. */
+function beginRoutine(ev) {
+  ev.notStarted = false;
+  ev.paused = false;
   ev.startedAt = Date.now();
   const cur = pendingTasks(ev)[0];
   ev.curTaskId = cur ? cur.id : null;
@@ -512,14 +569,19 @@ function renderHome() {
 
 function homeEventCard(ev, isActive) {
   const sch = computeSchedule(ev);
-  const lv = sch.leaveAt;
-  const secsToLeave = (lv.getTime() - Date.now()) / 1000;
+  const T = terms(ev);
+  const cd = liveCountdown(ev);
   const st = slackStatus(sch.slackSecs);
   const dayLabel = ev.date === todayStr() ? '' :
     (ev.date === todayStr(new Date(Date.now() + 86400000)) ? 'tomorrow · ' : ev.date + ' · ');
-  const meta = isActive
-    ? `<span class="badge ${st.cls === 'late' ? 'late' : 'ok'}" style="margin-left:0">${ev.paused ? '⏸ paused · ' : ''}${st.icon} ${st.label}</span>`
-    : `${dayLabel}leave by <b>${fmtClock(lv)}</b> · ${pendingTasks(ev).length} tasks · ${fmtDur(totalEstMins(ev.tasks))}`;
+  let meta;
+  if (isActive && ev.notStarted) {
+    meta = `<span class="badge ok" style="margin-left:0">⏳ starts ${fmtClock(new Date(sch.startByMs))}</span>`;
+  } else if (isActive) {
+    meta = `<span class="badge ${st.cls === 'late' ? 'late' : 'ok'}" style="margin-left:0">${ev.paused ? '⏸ paused · ' : ''}${st.icon} ${st.label}</span>`;
+  } else {
+    meta = `${dayLabel}${T.homeMeta} <b>${fmtClock(sch.leaveAt)}</b> · ${pendingTasks(ev).length} tasks · ${fmtDur(totalEstMins(ev.tasks))}`;
+  }
   return `
     <button class="event-card ${isActive ? 'active-ev' : ''}" data-act="open-event" data-id="${ev.id}">
       <div class="ev-row1">
@@ -529,8 +591,8 @@ function homeEventCard(ev, isActive) {
           <div class="ev-meta">${meta}</div>
         </span>
         <span class="ev-count" data-home-count data-id="${ev.id}">
-          <div class="n">${fmtCount(secsToLeave)}</div>
-          <div class="lbl">${secsToLeave < 0 ? 'past leave' : 'until leave'}</div>
+          <div class="n">${fmtCount(cd.secs)}</div>
+          <div class="lbl">${cd.secs < 0 ? cd.past : cd.until}</div>
         </span>
       </div>
     </button>`;
@@ -861,7 +923,7 @@ function renderEdit() {
     </div>
 
     <div class="card">
-      <div class="field-label" data-time-label>${ev.travelMins > 0 ? '🕐 I need to ARRIVE by' : '🕐 I need to be OUT THE DOOR by'}</div>
+      <div class="field-label" data-time-label>${terms(ev).timeLabel}</div>
       <input class="time-input" data-time type="time" value="${ev.time}">
       <div class="chip-row" style="margin-top:12px">
         <button class="chip ${ev.date !== tomorrow ? 'on' : ''}" data-day="today">Today</button>
@@ -908,18 +970,21 @@ function renderEdit() {
   };
   const refreshDerived = () => {
     const sch = computeSchedule(ev);
+    const T = terms(ev);
     const total = totalEstMins(ev.tasks);
-    const startBy = new Date(sch.leaveAt.getTime() - total * 60000);
+    const startBy = new Date(sch.startByMs);
     const late = startBy.getTime() < Date.now();
-    $('[data-derived]').innerHTML =
-      `${ev.travelMins > 0 ? `Leave home by <b>${fmtClock(sch.leaveAt)}</b> · arrive <b>${fmtClock(sch.targetAt)}</b><br>` : ''}` +
+    const goalLine = T.out
+      ? `Leave home by <b>${fmtClock(sch.leaveAt)}</b> · arrive <b>${fmtClock(sch.targetAt)}</b><br>`
+      : `Be ready by <b>${fmtClock(sch.targetAt)}</b><br>`;
+    $('[data-derived]').innerHTML = goalLine +
       (ev.tasks.length
-        ? `${fmtDur(total)} of getting ready → start by <b>${fmtClock(startBy)}</b>${late ? ' — that\'s already passed, hustle! 🐇' : ''}`
+        ? `${fmtDur(total)} of steps → start by <b>${fmtClock(startBy)}</b>${late ? ' — that\'s already passed, hustle! 🐇' : ''}`
         : 'Add your steps below and I\'ll tell you when to start.');
     $('[data-derived]').classList.toggle('warn', late && ev.tasks.length > 0);
     $('[data-start-hint]').innerHTML = ev.tasks.length
       ? (late ? `You're starting <b>${fmtMinsLoose((Date.now() - startBy.getTime()) / 1000)} late</b> — I'll keep you honest 💪`
-              : `Start by <b>${fmtClock(startBy)}</b> and you'll glide out the door.`)
+              : `Start by <b>${fmtClock(startBy)}</b> ${T.startTail}`)
       : '';
   };
   const refresh = () => { refreshList(); refreshDerived(); };
@@ -948,7 +1013,7 @@ function renderEdit() {
     if (tr) {
       ev.travelMins = Number(tr.dataset.travel);
       $$('[data-travel]').forEach((c) => c.classList.toggle('on', c === tr));
-      $('[data-time-label]').textContent = ev.travelMins > 0 ? '🕐 I need to ARRIVE by' : '🕐 I need to be OUT THE DOOR by';
+      $('[data-time-label]').textContent = terms(ev).timeLabel;
       save(); refreshDerived(); return;
     }
     const act = e.target.closest('[data-act]');
@@ -1007,7 +1072,7 @@ function checkAway() {
   if (!last || gone < AWAY_MS) return;
   let touched = false;
   for (const ev of S.events) {
-    if (ev.status === 'active' && !ev.paused) {
+    if (ev.status === 'active' && !ev.paused && !ev.notStarted) {
       pauseEvent(ev, true, Math.max(ev.curStart, last));
       touched = true;
     }
@@ -1021,6 +1086,7 @@ function renderLive() {
   const ev = getEvent(route.id);
   if (!ev || ev.status !== 'active') return go('home');
   keepAwake();
+  const T = terms(ev);
 
   app.innerHTML = `
     <div class="page-top">
@@ -1032,18 +1098,18 @@ function renderLive() {
 
     <div class="live-head">
       <div class="live-count" data-countdown>–:–</div>
-      <div class="live-count-lbl" data-countdown-lbl>until you leave</div>
+      <div class="live-count-lbl" data-countdown-lbl>${T.countUntil}</div>
       <div class="clock-strip">
         <span class="clock-bit">now <b data-now-clock></b></span>
-        <button class="clock-bit clock-edit" data-act="edit-time">🚪 leave <b data-leave-clock></b> ✎</button>
-        <span class="clock-bit" data-arrive-bit ${Number(ev.travelMins) > 0 ? '' : 'style="display:none"'}>📍 arrive <b data-arrive-clock></b></span>
+        <button class="clock-bit clock-edit" data-act="edit-time"><span data-goal-word>${T.goalEmoji} ${T.goalWord}</span> <b data-leave-clock></b> ✎</button>
+        <span class="clock-bit" data-arrive-bit ${T.out ? '' : 'style="display:none"'}>📍 arrive <b data-arrive-clock></b></span>
       </div>
       <div><span class="status-pill ok" data-status></span></div>
       <div style="margin-top:8px;color:var(--ink-soft);font-weight:700;font-size:0.88rem" data-readyline></div>
     </div>
 
     <div class="card" data-time-panel style="display:none;margin-bottom:14px">
-      <div class="field-label" data-panel-label>🕐 ${Number(ev.travelMins) > 0 ? 'I need to ARRIVE by' : 'I need to be OUT THE DOOR by'}</div>
+      <div class="field-label" data-panel-label>${T.timeLabel}</div>
       <input class="time-input" data-live-time type="time" value="${ev.time}">
       <div class="field-label" style="margin-top:16px">🚗 Travel time</div>
       <div class="chip-row">
@@ -1070,6 +1136,10 @@ function renderLive() {
         </button>
         <div class="done-body"><div class="t-list" data-donelist></div></div>
       </div>
+    </div>
+
+    <div style="text-align:center;margin-top:4px">
+      <button class="btn-link btn-danger-link" data-act="cancel-session">Cancel &amp; discard this session</button>
     </div>
 
     <div class="dock"><div class="dock-inner" data-addbar>${addBarHTML({ live: true })}</div></div>
@@ -1099,7 +1169,7 @@ function renderLive() {
     if (tr) {
       ev.travelMins = Number(tr.dataset.ltravel);
       $$('[data-ltravel]').forEach((c) => c.classList.toggle('on', c === tr));
-      $('[data-panel-label]').textContent = ev.travelMins > 0 ? '🕐 I need to ARRIVE by' : '🕐 I need to be OUT THE DOOR by';
+      $('[data-panel-label]').textContent = terms(ev).timeLabel;
       resetChimeFlags(ev);
       save();
       updateLive(ev);
@@ -1127,8 +1197,15 @@ function renderLive() {
       panel.style.display = panel.style.display === 'none' ? '' : 'none';
     }
     if (act.dataset.act === 'close-time-panel') $('[data-time-panel]').style.display = 'none';
+    if (act.dataset.act === 'hero-begin') { beginRoutine(ev); structure(); }
     if (act.dataset.act === 'hero-pause') { pauseEvent(ev); renderHero(ev); updateLive(ev); }
     if (act.dataset.act === 'hero-resume') { resumeEvent(ev); renderHero(ev); updateLive(ev); }
+    if (act.dataset.act === 'cancel-session') {
+      if (confirm('Discard this session? It won\'t be saved to your history, and any timings from it won\'t be learned.')) {
+        S.events = S.events.filter((x) => x.id !== ev.id);
+        save(); go('home');
+      }
+    }
     if (act.dataset.act === 'finish') {
       if (pendingTasks(ev).length === 0 || confirm('Finish now and skip the remaining tasks?')) {
         finishEvent(ev); save(); go('summary', { id: ev.id });
@@ -1171,6 +1248,28 @@ function renderHero(ev) {
   const heroEl = $('[data-hero]');
   if (!heroEl) return;
   if (!cur) { heroEl.innerHTML = ''; return; }
+
+  if (ev.notStarted) {
+    const startBy = new Date(computeSchedule(ev).startByMs);
+    heroEl.innerHTML = `
+      <div class="hero-task">
+        <div class="hero-top">
+          <span class="hero-icon">${cur.icon}</span>
+          <div style="min-width:0">
+            <div class="hero-name">First up: ${esc(cur.name)}</div>
+            <div class="hero-sub">${fmtDur(cur.estMins)} planned</div>
+          </div>
+        </div>
+        <div class="pause-banner waiting-banner">
+          🌿 No rush yet — you don't need to start until <b>${fmtClock(startBy)}</b>.<br>
+          I'll start the clock then, or begin early whenever you're ready.
+        </div>
+        <div class="hero-btns">
+          <button class="btn btn-green" style="flex:1" data-act="hero-begin">Start now ▶</button>
+        </div>
+      </div>`;
+    return;
+  }
 
   if (ev.paused) {
     const banked = Math.round(cur.spentSecs || 0);
@@ -1242,34 +1341,66 @@ function renderUpNext(ev) {
 function updateLive(ev) {
   if (route.page !== 'live' || ev.status !== 'active') return;
   const now = new Date();
-  const sch = computeSchedule(ev, now);
+  const T = terms(ev);
+  let sch = computeSchedule(ev, now);
+
+  // waiting → running: the clock reaches the latest safe start time
+  if (ev.notStarted && now.getTime() >= sch.startByMs) {
+    beginRoutine(ev);
+    chime('start');
+    renderHero(ev); renderUpNext(ev);
+    sch = computeSchedule(ev, now);
+  }
+
   const secsToLeave = (sch.leaveAt.getTime() - now.getTime()) / 1000;
+  const secsToStart = (sch.startByMs - now.getTime()) / 1000;
 
   const cd = $('[data-countdown]');
   if (cd) {
-    cd.textContent = fmtCount(secsToLeave);
-    cd.classList.toggle('late-t', secsToLeave < 0);
-    $('[data-countdown-lbl]').textContent = secsToLeave < 0 ? 'past your leave time' : 'until you leave';
+    if (ev.notStarted) {
+      cd.textContent = fmtCount(secsToStart);
+      cd.classList.remove('late-t');
+      $('[data-countdown-lbl]').textContent = 'until you start';
+    } else {
+      cd.textContent = fmtCount(secsToLeave);
+      cd.classList.toggle('late-t', secsToLeave < 0);
+      $('[data-countdown-lbl]').textContent = secsToLeave < 0 ? T.countPast : T.countUntil;
+    }
   }
   const nowEl = $('[data-now-clock]'); if (nowEl) nowEl.textContent = fmtClock(now);
   const lvEl = $('[data-leave-clock]'); if (lvEl) lvEl.textContent = fmtClock(sch.leaveAt);
+  const gw = $('[data-goal-word]'); if (gw) gw.textContent = `${T.goalEmoji} ${T.goalWord}`;
   const arEl = $('[data-arrive-clock]'); if (arEl) arEl.textContent = fmtClock(sch.targetAt);
-  const arBit = $('[data-arrive-bit]'); if (arBit) arBit.style.display = Number(ev.travelMins) > 0 ? '' : 'none';
+  const arBit = $('[data-arrive-bit]'); if (arBit) arBit.style.display = T.out ? '' : 'none';
 
-  // gentle reminders — once each, re-armed if the plan moves
-  if (secsToLeave <= 300 && secsToLeave > 0 && !ev.chimed5) { ev.chimed5 = true; save(); chime('warn5'); }
-  if (secsToLeave <= 0 && !ev.chimedLeave) { ev.chimedLeave = true; save(); chime('leave'); }
+  // gentle reminders — once each, re-armed if the plan moves (skipped while waiting)
+  if (!ev.notStarted) {
+    if (secsToLeave <= 300 && secsToLeave > 0 && !ev.chimed5) { ev.chimed5 = true; save(); chime('warn5'); }
+    if (secsToLeave <= 0 && !ev.chimedLeave) { ev.chimedLeave = true; save(); chime('leave'); }
+  }
 
-  const st = slackStatus(sch.slackSecs);
   const pill = $('[data-status]');
-  if (pill) { pill.className = `status-pill ${st.cls}`; pill.textContent = `${st.icon} ${st.label}`; }
+  if (pill) {
+    if (ev.notStarted) {
+      pill.className = 'status-pill ok';
+      pill.textContent = `🌿 ${fmtMinsLoose(secsToStart)} of buffer before you start`;
+    } else {
+      const st = slackStatus(sch.slackSecs);
+      pill.className = `status-pill ${st.cls}`;
+      pill.textContent = `${st.icon} ${st.label}`;
+    }
+  }
 
   const rl = $('[data-readyline]');
-  if (rl) rl.innerHTML = `at this pace you're ready at <b>${fmtClock(sch.readyAt)}</b> · goal ${fmtClock(sch.leaveAt)}`;
+  if (rl) {
+    rl.innerHTML = ev.notStarted
+      ? `start at <b>${fmtClock(new Date(sch.startByMs))}</b> and you'll be ${T.out ? 'out' : 'ready'} right on time`
+      : `at this pace you're ready at <b>${fmtClock(sch.readyAt)}</b> · goal ${fmtClock(sch.leaveAt)}`;
+  }
 
   // hero timer
   const cur = pendingTasks(ev)[0];
-  if (cur && !ev.paused) {
+  if (cur && !ev.paused && !ev.notStarted) {
     const spent = curSpentSecs(ev);
     const over = spent > cur.estMins * 60;
     if (over && !cur.chimedOver) { cur.chimedOver = true; save(); chime('over'); }
@@ -1306,6 +1437,7 @@ function renderSummary() {
   const ev = getEvent(route.id);
   if (!ev) return go('home');
   const ok = ev.resultSlackSecs >= 0;
+  const T = terms(ev);
   const doneTasks = ev.tasks.filter((t) => t.done && !t.untimed);
   const earlyTasks = ev.tasks.filter((t) => t.done && t.untimed);
   const totalActual = doneTasks.reduce((s, t) => s + (t.actualSecs || 0), 0);
@@ -1319,7 +1451,7 @@ function renderSummary() {
     <div class="summary-hero">
       <div class="big-emoji">${ok ? '🎉' : '🌧️'}</div>
       <div class="summary-verdict ${ok ? 'ok-v' : 'late-v'}">
-        ${ok ? `Out the door<br>${fmtMinsLoose(ev.resultSlackSecs)} early!` : `${fmtMinsLoose(ev.resultSlackSecs)} past leave time`}
+        ${ok ? `${T.verdictHead}<br>${fmtMinsLoose(ev.resultSlackSecs)} early!` : `${fmtMinsLoose(ev.resultSlackSecs)} ${T.verdictPast}`}
       </div>
       <div class="summary-sub">${esc(ev.name || 'Getting ready')} · ${ok ? 'right on schedule ⭐' : 'the estimates will be smarter next time 💕'}</div>
     </div>
@@ -1563,9 +1695,9 @@ setInterval(() => {
     $$('[data-home-count]').forEach((el) => {
       const ev = getEvent(el.dataset.id);
       if (!ev) return;
-      const secs = (leaveAt(ev).getTime() - Date.now()) / 1000;
-      $('.n', el).textContent = fmtCount(secs);
-      $('.lbl', el).textContent = secs < 0 ? 'past leave' : 'until leave';
+      const cd = liveCountdown(ev);
+      $('.n', el).textContent = fmtCount(cd.secs);
+      $('.lbl', el).textContent = cd.secs < 0 ? cd.past : cd.until;
     });
   }
 }, 1000);

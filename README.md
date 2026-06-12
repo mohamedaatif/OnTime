@@ -1,9 +1,11 @@
 # OnTime 🎀 — out the door, gracefully
 
-A gentle, pastel getting-ready timer built to fight **time blindness**. Tell it when
-you need to be somewhere, list your getting-ready steps, and it works *backwards*
-from your deadline — showing every task at its real clock time, re-projecting the
-whole schedule live as you go, and telling you the moment you start slipping.
+A gentle, pastel readiness timer built to fight **time blindness**. Tell it when
+you need to be ready — leaving for an event, or winding down for bed — list your
+steps, and it works *backwards* from your deadline, showing every task at its real
+clock time, re-projecting the whole schedule live as you go, and telling you the
+moment you start slipping. Set a travel time and it talks about leaving & arriving;
+leave it off and it simply helps you "be ready by" a time.
 
 Built as an installable, offline-first **PWA** — no build step, no dependencies,
 just static files.
@@ -11,12 +13,17 @@ just static files.
 ## How it works
 
 1. **Plan** — set when you need to *arrive* (with optional travel time) or just be
-   out the door. Add steps with one tap from preset chips, or type a name and pick
-   a duration. The app tells you exactly when to start.
-2. **Get ready** — live mode shows a big countdown to your leave time, the current
-   task's running timer vs. its estimate, and every upcoming task with its
+   ready by a time. Add steps with one tap from preset chips, or type a name and
+   pick a duration. The app tells you exactly when to start.
+2. **Relax until it's time** — if your steps fit with time to spare, live mode opens
+   in a calm waiting state with a countdown to *when you actually need to start*
+   ("58m until you start") instead of running the first task immediately. It begins
+   the clock for you at the right moment, or tap **Start now** to begin early.
+3. **Get ready** — live mode shows a big countdown to your leave/ready time, the
+   current task's running timer vs. its estimate, and every upcoming task with its
    projected clock window ("7:42 – 7:50"), recalculated every second. A status
    pill tells you if you're on track, cutting it close, or behind — and by how much.
+   Changed your mind? **Cancel & discard** the session without recording it.
 3. **Adjust on the fly** — add tasks mid-routine ("Next" or "Last"), drag ⠿ to
    reorder, tap a task to type/slide a new estimate or remove it, push the
    current task to "Later", or check things off out of order. Tap the 🚪 leave

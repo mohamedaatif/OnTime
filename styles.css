@@ -489,6 +489,7 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
   color: var(--butter-deep); font-weight: 700; font-size: 0.92rem;
   line-height: 1.55;
 }
+.pause-banner.waiting-banner { background: var(--green-soft); color: var(--green-deep); }
 .clock-edit { cursor: pointer; border: 1.5px solid var(--pink-soft); }
 .clock-edit:active { transform: scale(0.95); }
 
