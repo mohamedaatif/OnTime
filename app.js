@@ -400,7 +400,7 @@ function renderHome() {
   const upcoming = S.events.filter((e) => e.status === 'setup')
     .sort((a, b) => targetAt(a) - targetAt(b));
   const past = S.events.filter((e) => e.status === 'done')
-    .sort((a, b) => b.finishedAt - a.finishedAt).slice(0, 5);
+    .sort((a, b) => b.finishedAt - a.finishedAt);
   const cp = fmtClockParts(new Date());
 
   app.innerHTML = `
@@ -449,14 +449,20 @@ function renderHome() {
       </button>` : ''}
 
     ${past.length ? `
-      <div class="section-label">How it went</div>
+      <div class="label-row">
+        <div class="section-label" style="margin:0 4px">How it went</div>
+        <button class="btn-link" data-act="clear-past" style="padding:6px 4px">Clear all</button>
+      </div>
       <div class="card" style="padding:8px 16px">
         ${past.map((ev) => {
           const ok = ev.resultSlackSecs >= 0;
-          return `<div class="past-row">
-            <span>${ev.icon}</span>
-            <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc(ev.name || 'Getting ready')}</span>
-            <span class="badge ${ok ? 'ok' : 'late'}">${ok ? `${fmtMinsLoose(ev.resultSlackSecs)} early 🎉` : `${fmtMinsLoose(ev.resultSlackSecs)} late`}</span>
+          return `<div class="past-row" data-past-id="${ev.id}">
+            <button class="past-open" data-act="open-summary" data-id="${ev.id}" aria-label="View details">
+              <span>${ev.icon}</span>
+              <span class="past-name">${esc(ev.name || 'Getting ready')}</span>
+              <span class="badge ${ok ? 'ok' : 'late'}">${ok ? `${fmtMinsLoose(ev.resultSlackSecs)} early 🎉` : `${fmtMinsLoose(ev.resultSlackSecs)} late`}</span>
+            </button>
+            <button class="past-del" data-act="del-past" data-id="${ev.id}" aria-label="Delete this">×</button>
           </div>`;
         }).join('')}
       </div>` : ''}
@@ -482,6 +488,25 @@ function renderHome() {
     }
     if (act === 'manage-routines') go('routines');
     if (act === 'insights') go('insights');
+    if (act === 'open-summary') go('summary', { id: btn.dataset.id, replay: true });
+    if (act === 'del-past') {
+      const row = btn.closest('.past-row');
+      const id = btn.dataset.id;
+      if (row) {
+        row.classList.add('removing');
+        setTimeout(() => { S.events = S.events.filter((x) => x.id !== id); save(); renderHome(); }, 200);
+      } else {
+        S.events = S.events.filter((x) => x.id !== id); save(); renderHome();
+      }
+    }
+    if (act === 'clear-past') {
+      const n = S.events.filter((x) => x.status === 'done').length;
+      if (confirm(`Clear all ${n} finished ${n === 1 ? 'event' : 'events'} from your history?`)) {
+        S.events = S.events.filter((x) => x.status !== 'done');
+        save();
+        renderHome();
+      }
+    }
   };
 }
 
@@ -1287,6 +1312,10 @@ function renderSummary() {
   const maxSecs = Math.max(...doneTasks.map((t) => Math.max(t.actualSecs || 0, t.estMins * 60)), 1);
 
   app.innerHTML = `
+    ${route.replay ? `<div class="page-top">
+      <button class="btn-icon" data-act="home" aria-label="Back">‹</button>
+      <h1 style="font-size:1.2rem">Looking back</h1>
+    </div>` : ''}
     <div class="summary-hero">
       <div class="big-emoji">${ok ? '🎉' : '🌧️'}</div>
       <div class="summary-verdict ${ok ? 'ok-v' : 'late-v'}">
@@ -1345,7 +1374,7 @@ function renderSummary() {
     </div>
   `;
 
-  if (ok) confetti();
+  if (ok && !route.replay) confetti();
   app.onclick = (e) => {
     const act = e.target.closest('[data-act]');
     if (!act) return;

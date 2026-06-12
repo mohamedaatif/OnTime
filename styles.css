@@ -224,12 +224,35 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .routine-card:active { transform: scale(0.98); }
 .routine-card .ev-emoji { background: var(--green-soft); border-radius: 13px; width: 40px; height: 40px; font-size: 1.2rem; }
 
+.label-row { display: flex; align-items: center; justify-content: space-between; margin: 22px 0 10px; }
+.label-row .btn-link { color: var(--ink-faint); font-size: 0.78rem; }
+
 .past-row {
-  display: flex; align-items: center; gap: 10px;
-  padding: 10px 6px; color: var(--ink-soft); font-weight: 600; font-size: 0.9rem;
+  display: flex; align-items: center; gap: 4px;
   border-bottom: 1px dashed #f4dde8;
+  overflow: hidden;
+  transition: max-height 0.2s ease, opacity 0.2s ease, padding 0.2s ease;
+  max-height: 60px;
 }
 .past-row:last-child { border-bottom: none; }
+.past-row.removing { max-height: 0; opacity: 0; padding: 0; border-bottom: none; }
+.past-open {
+  flex: 1; min-width: 0;
+  display: flex; align-items: center; gap: 10px;
+  background: none; border: none; text-align: left;
+  padding: 10px 2px; color: var(--ink-soft); font-weight: 600; font-size: 0.9rem;
+  transition: opacity 0.12s ease;
+}
+.past-open:active { opacity: 0.55; }
+.past-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.past-del {
+  flex: none; width: 32px; height: 32px; border-radius: 50%;
+  border: none; background: none; color: var(--ink-faint);
+  font-size: 1.35rem; line-height: 1; font-weight: 400;
+  display: flex; align-items: center; justify-content: center;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+.past-del:active { background: var(--coral-soft); color: var(--coral-deep); }
 .badge {
   margin-left: auto; border-radius: 999px; padding: 4px 11px;
   font-size: 0.78rem; font-weight: 700; flex: none;
