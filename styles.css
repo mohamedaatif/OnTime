@@ -640,52 +640,62 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .home-foot .btn-link { font-size: 0.8rem; }
 
 /* ===================================================================
-   DUSK — automatic dark theme (follows the system setting)
+   DUSK — dark theme. `.is-dark` is toggled on <html> by JS (and the
+   pre-paint inline script), resolved from the saved preference:
+   Auto → follow the system, or a manual Light / Dark override.
    =================================================================== */
 :root { color-scheme: light; }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    color-scheme: dark;
-    --bg: #221721;
-    --card: #2e2029;
-    --card-soft: #362732;
-    --ink: #f4e4ed;
-    --ink-soft: #c9a4b8;
-    --ink-faint: #8e7081;
-    --pink-soft: #46303c;
-    --pink-mist: #3a2733;
-    --pink-dark: #f0a0c4;
-    --green-soft: #25382d;
-    --green-deep: #7cc69c;
-    --butter: #453a1e;
-    --butter-deep: #e2c36b;
-    --lav: #43345a;
-    --lav-deep: #c8b2f2;
-    --coral-soft: #4b2733;
-    --coral-deep: #ff8da6;
-    --shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.55);
-    --shadow-sm: 0 6px 18px -8px rgba(0, 0, 0, 0.45);
+:root.is-dark {
+  color-scheme: dark;
+  --bg: #221721;
+  --card: #2e2029;
+  --card-soft: #362732;
+  --ink: #f4e4ed;
+  --ink-soft: #c9a4b8;
+  --ink-faint: #8e7081;
+  --pink-soft: #46303c;
+  --pink-mist: #3a2733;
+  --pink-dark: #f0a0c4;
+  --green-soft: #25382d;
+  --green-deep: #7cc69c;
+  --butter: #453a1e;
+  --butter-deep: #e2c36b;
+  --lav: #43345a;
+  --lav-deep: #c8b2f2;
+  --coral-soft: #4b2733;
+  --coral-deep: #ff8da6;
+  --shadow: 0 14px 34px -16px rgba(0, 0, 0, 0.55);
+  --shadow-sm: 0 6px 18px -8px rgba(0, 0, 0, 0.45);
+}
+.is-dark .bg-blobs {
+  background:
+    radial-gradient(420px 420px at 100% -4%, rgba(216, 121, 168, 0.14), transparent 70%),
+    radial-gradient(420px 420px at -6% 102%, rgba(124, 198, 156, 0.10), transparent 70%),
+    radial-gradient(340px 340px at -10% 42%, rgba(177, 143, 235, 0.10), transparent 70%);
+}
+.is-dark .card, .is-dark .event-card, .is-dark .stat-tile { border-color: #443240; }
+.is-dark .routine-card { border-color: #324237; box-shadow: var(--shadow-sm); }
+.is-dark .event-card.active-ev { background: linear-gradient(135deg, var(--card) 30%, var(--pink-mist)); border-color: #5a3f50; }
+.is-dark .btn-ghost, .is-dark .chip, .is-dark .clock-bit, .is-dark .next-toggle, .is-dark .est-input, .is-dark .dur-custom { background: #3a2a36; border-color: #513c4b; }
+.is-dark .stat-tile { background: var(--card); }
+.is-dark .t-row, .is-dark .past-row, .is-dark .cmp-row { border-bottom-color: #4a3743; }
+.is-dark .t-check { background: #3a2a36; border-color: #5c4555; }
+.is-dark .t-row.done-row .t-check, .is-dark .t-check.checked { background: var(--green-deep); border-color: var(--green-deep); color: #14241b; }
+.is-dark .chip-green.on { color: #14241b; }
+.is-dark .hero-task { background: linear-gradient(150deg, #332432 40%, var(--pink-mist)); border-color: #553d4e; }
+.is-dark .hero-icon { background: #3f2d3b; }
+.is-dark .hero-bar { background: #463340; }
+.is-dark .clock-edit { border-color: #5a4050; }
+.is-dark .dock { background: linear-gradient(to top, rgba(34, 23, 33, 0.97) 65%, rgba(34, 23, 33, 0)); }
+.is-dark .dock-inner { background: rgba(46, 32, 41, 0.92); border-color: #553d4e; }
+
+/* ---------- reduced motion: calm everything, drop confetti ---------- */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.001ms !important;
   }
-  .bg-blobs {
-    background:
-      radial-gradient(420px 420px at 100% -4%, rgba(216, 121, 168, 0.14), transparent 70%),
-      radial-gradient(420px 420px at -6% 102%, rgba(124, 198, 156, 0.10), transparent 70%),
-      radial-gradient(340px 340px at -10% 42%, rgba(177, 143, 235, 0.10), transparent 70%);
-  }
-  .card, .event-card, .stat-tile { border-color: #443240; }
-  .routine-card { border-color: #324237; box-shadow: var(--shadow-sm); }
-  .event-card.active-ev { background: linear-gradient(135deg, var(--card) 30%, var(--pink-mist)); border-color: #5a3f50; }
-  .btn-ghost, .chip, .clock-bit, .next-toggle, .est-input, .dur-custom { background: #3a2a36; border-color: #513c4b; }
-  .stat-tile { background: var(--card); }
-  .t-row, .past-row, .cmp-row { border-bottom-color: #4a3743; }
-  .t-check { background: #3a2a36; border-color: #5c4555; }
-  .t-row.done-row .t-check, .t-check.checked { background: var(--green-deep); border-color: var(--green-deep); color: #14241b; }
-  .chip-green.on { color: #14241b; }
-  .hero-task { background: linear-gradient(150deg, #332432 40%, var(--pink-mist)); border-color: #553d4e; }
-  .hero-icon { background: #3f2d3b; }
-  .hero-bar { background: #463340; }
-  .clock-edit { border-color: #5a4050; }
-  .dock { background: linear-gradient(to top, rgba(34, 23, 33, 0.97) 65%, rgba(34, 23, 33, 0)); }
-  .dock-inner { background: rgba(46, 32, 41, 0.92); border-color: #553d4e; }
+  .confetti { display: none !important; }
 }

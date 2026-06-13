@@ -1,11 +1,19 @@
 /* OnTime service worker — app shell, offline-first */
-const CACHE = 'ontime-v1.4.0';
+const CACHE = 'ontime-v1.5.0';
 const SHELL = [
   './',
   './index.html',
   './styles.css',
   './app.js',
   './manifest.webmanifest',
+  './fonts/fonts.css',
+  './fonts/fraunces-500.woff2',
+  './fonts/fraunces-600.woff2',
+  './fonts/fraunces-700.woff2',
+  './fonts/quicksand-400.woff2',
+  './fonts/quicksand-500.woff2',
+  './fonts/quicksand-600.woff2',
+  './fonts/quicksand-700.woff2',
   './icons/favicon.svg',
   './icons/icon-192.png',
   './icons/icon-512.png',
@@ -42,19 +50,5 @@ self.addEventListener('fetch', (e) => {
       })
     );
     return;
-  }
-
-  // fonts & other cross-origin: stale-while-revalidate
-  if (url.hostname.includes('fonts.g')) {
-    e.respondWith(
-      caches.open(CACHE + '-rt').then(async (c) => {
-        const hit = await c.match(e.request);
-        const net = fetch(e.request).then((res) => {
-          c.put(e.request, res.clone());
-          return res;
-        }).catch(() => hit);
-        return hit || net;
-      })
-    );
   }
 });

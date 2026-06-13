@@ -45,10 +45,13 @@ just static files.
    with one tap.
 9. **Quality of life** — picking a time that's already passed today auto-rolls to
    tomorrow (late-night bedtime planning just works); 🔔 "Remind me on my calendar"
-   exports an `.ics` with an alarm at your computed start-by time; **Back up /
-   Restore** on the home screen moves all data (routines, learned pace, history)
-   between devices as a JSON file; and a dusk dark theme follows the system
-   setting automatically.
+   exports an `.ics` with a 5-minute warning and a start-time alarm; a dusk dark
+   theme follows the system setting (with a manual Light/Dark override under
+   **Settings**); and **Back up / Restore** (also under Settings) moves all data
+   between devices as a JSON file. Fonts are self-hosted so it's fully offline
+   with no third-party requests.
+
+Fonts are vendored locally; regenerate them with `node tools/fetch-fonts.mjs`.
 
 ## Publish to GitHub Pages
 

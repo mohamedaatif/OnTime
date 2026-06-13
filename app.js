@@ -100,6 +100,7 @@ function load() {
     if (raw) {
       const s = JSON.parse(raw);
       if (s.sound === undefined) s.sound = true;
+      if (s.theme === undefined) s.theme = 'auto';
       return s;
     }
   } catch (e) { /* fall through to fresh state */ }
@@ -107,8 +108,21 @@ function load() {
   for (const [name, est, icon] of SEED_PRESETS) {
     history[name.toLowerCase()] = { name, icon, estMins: est, count: 0, seed: true };
   }
-  return { events: [], routines: [], history, lastDur: 10, sound: true };
+  return { events: [], routines: [], history, lastDur: 10, sound: true, theme: 'auto' };
 }
+
+/* ---------------- theme ---------------- */
+const darkMQ = window.matchMedia('(prefers-color-scheme: dark)');
+function isDarkResolved() {
+  return S.theme === 'dark' || (S.theme !== 'light' && darkMQ.matches);
+}
+function applyTheme() {
+  const dark = isDarkResolved();
+  document.documentElement.classList.toggle('is-dark', dark);
+  const meta = document.querySelector('meta[name="theme-color"]');
+  if (meta) meta.setAttribute('content', dark ? '#221721' : '#fdf3f7');
+}
+darkMQ.addEventListener('change', () => { if (S.theme === 'auto') applyTheme(); });
 function save() {
   // keep finished events trimmed
   const done = S.events.filter((e) => e.status === 'done');
@@ -216,8 +230,8 @@ function computeSchedule(ev, now = new Date()) {
 }
 function slackStatus(slackSecs) {
   if (slackSecs >= 120) return { cls: 'ok', icon: '🌿', label: `On track · ${fmtMinsLoose(slackSecs)} to spare` };
-  if (slackSecs >= 0) return { cls: 'close', icon: '🐝', label: 'Cutting it close' };
-  return { cls: 'late', icon: '🌧️', label: `Behind by ${fmtMinsLoose(slackSecs)}` };
+  if (slackSecs >= 0) return { cls: 'close', icon: '🌼', label: 'Cutting it close — you can do it' };
+  return { cls: 'late', icon: '💗', label: `A little behind — ${fmtMinsLoose(slackSecs)}, you've got this` };
 }
 
 /* Wording adapts to the kind of deadline: a trip out the door (travel time
@@ -292,13 +306,26 @@ function pauseEvent(ev, auto = false, asOf = Date.now()) {
   if (cur) cur.spentSecs = (cur.spentSecs || 0) + Math.max(0, asOf - ev.curStart) / 1000;
   ev.paused = true;
   ev.autoPaused = auto;
+  // remember the gap we declined to bill, so she can take it back if she
+  // really was doing the step while away
+  ev.creditBack = (auto && cur) ? { taskId: cur.id, secs: Math.max(0, (Date.now() - asOf) / 1000) } : null;
   ev.curStart = Date.now();
   save();
 }
 function resumeEvent(ev) {
   ev.paused = false;
   ev.autoPaused = false;
+  ev.creditBack = null;
   ev.curStart = Date.now();
+  save();
+}
+/** "Actually, count that time" — give the credited-back gap back to the step. */
+function countAwayTime(ev) {
+  const cb = ev.creditBack;
+  if (!cb) return;
+  const t = ev.tasks.find((x) => x.id === cb.taskId);
+  if (t && !t.done) t.spentSecs = (t.spentSecs || 0) + cb.secs;
+  ev.creditBack = null;
   save();
 }
 
@@ -442,6 +469,7 @@ function render() {
     case 'routines': renderRoutines(); break;
     case 'routine-edit': renderRoutineEdit(); break;
     case 'insights': renderInsights(); break;
+    case 'settings': renderSettings(); break;
     default: renderHome();
   }
 }
@@ -476,6 +504,13 @@ function renderHome() {
     </div>
 
     ${active.map((ev) => homeEventCard(ev, true)).join('')}
+    ${(() => {
+      const withTimers = active.filter((e) => (e.timers || []).length);
+      if (!withTimers.length) return '';
+      return `<div class="timers-row" style="margin:0 2px 14px">${
+        withTimers.map((e) => timerChipsHTML(e.timers, e.id)).join('')
+      }</div>`;
+    })()}
     ${upcoming.map((ev) => homeEventCard(ev, false)).join('')}
 
     ${!active.length && !upcoming.length ? `
@@ -534,14 +569,19 @@ function renderHome() {
       </div>` : ''}
 
     <div class="home-foot">
-      <button class="btn-link" data-act="export">Back up my data</button>
-      <span style="color:var(--ink-faint)">·</span>
-      <button class="btn-link" data-act="import">Restore</button>
-      <input type="file" accept=".json,application/json" data-import-file style="display:none">
+      <button class="btn-link" data-act="settings">⚙ Settings &amp; backup</button>
     </div>
   `;
 
   app.onclick = (e) => {
+    const tkill = e.target.closest('[data-timer-cancel], [data-timer-clear]');
+    if (tkill) {
+      const tid = tkill.dataset.timerCancel || tkill.dataset.timerClear;
+      const ev = getEvent(tkill.dataset.ev);
+      if (ev) { ev.timers = (ev.timers || []).filter((t) => t.id !== tid); save(); }
+      renderHome();
+      return;
+    }
     const btn = e.target.closest('[data-act]');
     if (!btn) return;
     const act = btn.dataset.act;
@@ -561,8 +601,7 @@ function renderHome() {
     }
     if (act === 'manage-routines') go('routines');
     if (act === 'insights') go('insights');
-    if (act === 'export') exportBackup();
-    if (act === 'import') $('[data-import-file]').click();
+    if (act === 'settings') go('settings');
     if (act === 'open-summary') go('summary', { id: btn.dataset.id, replay: true });
     if (act === 'del-past') {
       const row = btn.closest('.past-row');
@@ -582,12 +621,6 @@ function renderHome() {
         renderHome();
       }
     }
-  };
-
-  $('[data-import-file]').onchange = (e) => {
-    const f = e.target.files[0];
-    if (f) importBackup(f);
-    e.target.value = '';
   };
 }
 
@@ -1099,8 +1132,10 @@ async function importBackup(file) {
     if (!confirm(`Restore this backup (${counts})? It replaces everything currently on this device.`)) return;
     S = data;
     if (S.sound === undefined) S.sound = true;
+    if (S.theme === undefined) S.theme = 'auto';
     save();
-    render();
+    applyTheme();
+    go('home');
     alert('Restored! Everything is back. 🌿');
   } catch (e) {
     alert("Hmm, that file doesn't look like an OnTime backup.");
@@ -1130,6 +1165,9 @@ function downloadStartReminder(ev) {
     `DTEND:${icsLocal(sch.leaveAt)}`,
     `SUMMARY:${icsEscape(`Start getting ready — ${name}`)}`,
     `DESCRIPTION:${icsEscape(`${fmtDur(totalEstMins(ev.tasks))} of steps · ${T.out ? 'leave by' : 'ready by'} ${fmtClock(sch.leaveAt)} · planned in OnTime`)}`,
+    'BEGIN:VALARM', 'TRIGGER:-PT5M', 'ACTION:DISPLAY',
+    `DESCRIPTION:${icsEscape(`5 minutes until you start — ${name}`)}`,
+    'END:VALARM',
     'BEGIN:VALARM', 'TRIGGER:-PT0M', 'ACTION:DISPLAY',
     `DESCRIPTION:${icsEscape(`Time to start getting ready — ${name}`)}`,
     'END:VALARM',
@@ -1166,10 +1204,11 @@ document.addEventListener('visibilitychange', () => {
   }
 });
 
-/* If the app was gone for a long while (phone pocketed, did other things),
-   don't let that gap count against the current task: bank time only up to
-   when we last saw the clock, then auto-pause. */
-const AWAY_MS = 20 * 60 * 1000;
+/* If the app was gone for a while (backgrounded, phone pocketed), don't let
+   that gap count against the current task: bank time only up to when we last
+   saw the clock, then auto-pause. Short — with a one-tap "count it anyway" if
+   she really was doing the step. The deadline keeps running regardless. */
+const AWAY_MS = 3 * 60 * 1000;
 function checkAway() {
   const last = S.lastTick || 0;
   const gone = Date.now() - last;
@@ -1375,6 +1414,7 @@ function renderLive() {
     if (act.dataset.act === 'hero-begin') { beginRoutine(ev); structure(); }
     if (act.dataset.act === 'hero-pause') { pauseEvent(ev); renderHero(ev); updateLive(ev); }
     if (act.dataset.act === 'hero-resume') { resumeEvent(ev); renderHero(ev); updateLive(ev); }
+    if (act.dataset.act === 'count-away') { countAwayTime(ev); renderHero(ev); updateLive(ev); }
     if (act.dataset.act === 'hero-remove') {
       const cur = pendingTasks(ev)[0];
       if (cur && confirm(`Remove "${cur.name}" from this routine? Its timer will be discarded.`)) {
@@ -1474,13 +1514,18 @@ function renderHero(ev) {
           <button class="hero-remove" data-act="hero-remove" aria-label="Remove this task">✕</button>
         </div>
         <div class="pause-banner">
-          ⏸ ${ev.autoPaused ? "Paused while you were away — that gap isn't counted." : "Paused — the timer isn't counting."}
+          ⏸ ${ev.autoPaused
+            ? `Welcome back! You were away ${ev.creditBack ? fmtMinsLoose(ev.creditBack.secs) : 'a while'} — I didn't count it against ${esc(cur.name)}.`
+            : "Paused — the timer isn't counting."}
           ${banked >= 20 ? `<br>${fmtCount(banked)} on the clock for this so far.` : ''}
         </div>
         <div class="hero-btns">
           <button class="btn btn-primary" style="flex:1" data-act="hero-resume">Resume ▶</button>
           <button class="btn btn-ghost" data-act="hero-done">Done ✓</button>
         </div>
+        ${ev.creditBack && ev.creditBack.secs >= 30
+          ? `<button class="pause-link" data-act="count-away">Actually, I was — count that ${fmtMinsLoose(ev.creditBack.secs)} ↩</button>`
+          : ''}
       </div>`;
     return;
   }
@@ -1512,18 +1557,20 @@ function renderHero(ev) {
 /* Passive side timers — things that run by themselves (hair mask, chai,
    the oven) while she keeps moving through tasks. They tick on wall clock,
    don't pause when the routine pauses, and never block the queue. */
+function timerChipsHTML(timers, evId) {
+  return (timers || []).map((t) => {
+    const rem = Math.ceil((t.endAt - Date.now()) / 1000);
+    return rem > 0
+      ? `<span class="timer-chip">${t.icon} ${esc(t.name)} <b data-timer-count="${t.id}">${fmtCount(rem)}</b><button class="timer-x" data-timer-cancel="${t.id}" data-ev="${evId}" aria-label="Cancel timer">✕</button></span>`
+      : `<button class="timer-chip done" data-timer-clear="${t.id}" data-ev="${evId}">${t.icon} ${esc(t.name)} done! ✓</button>`;
+  }).join('');
+}
 function renderTimers(ev) {
   const wrap = $('[data-timers]');
   if (!wrap) return;
-  const ts = ev.timers || [];
   wrap.innerHTML = `
     <div class="timers-row">
-      ${ts.map((t) => {
-        const rem = Math.ceil((t.endAt - Date.now()) / 1000);
-        return rem > 0
-          ? `<span class="timer-chip">${t.icon} ${esc(t.name)} <b data-timer-count="${t.id}">${fmtCount(rem)}</b><button class="timer-x" data-timer-cancel="${t.id}" aria-label="Cancel timer">✕</button></span>`
-          : `<button class="timer-chip done" data-timer-clear="${t.id}">${t.icon} ${esc(t.name)} done! ✓</button>`;
-      }).join('')}
+      ${timerChipsHTML(ev.timers, ev.id)}
       <button class="timer-chip add-timer" data-act="timer-open">⏲ ＋ side timer</button>
     </div>`;
 }
@@ -1641,20 +1688,29 @@ function updateLive(ev) {
   }
 
   // side timers tick on wall clock — independent of pause and the task queue
-  let timerFinished = false;
   for (const t of ev.timers || []) {
     const rem = Math.ceil((t.endAt - Date.now()) / 1000);
-    if (rem > 0) {
-      const el = $(`[data-timer-count="${t.id}"]`);
-      if (el) el.textContent = fmtCount(rem);
-    } else if (!t.chimed) {
-      t.chimed = true;
-      save();
-      chime('timer');
-      timerFinished = true;
+    const el = $(`[data-timer-count="${t.id}"]`);
+    if (el && rem > 0) el.textContent = fmtCount(rem);
+  }
+}
+
+/* Advance side-timer state across every active session, regardless of which
+   screen is showing — so the oven still dings if she's wandered off. Returns
+   true if any timer just finished (caller re-renders the visible chips). */
+function advanceTimers() {
+  let finished = false;
+  for (const ev of S.events) {
+    if (ev.status !== 'active') continue;
+    for (const t of ev.timers || []) {
+      if (t.endAt - Date.now() <= 0 && !t.chimed) {
+        t.chimed = true;
+        finished = true;
+      }
     }
   }
-  if (timerFinished) renderTimers(ev);
+  if (finished) { save(); chime('timer'); }
+  return finished;
 }
 
 /* ===================================================================
@@ -1815,6 +1871,69 @@ function confetti() {
 }
 
 /* ===================================================================
+   SETTINGS — theme, sound, and data (tucked away off the home screen)
+   =================================================================== */
+function renderSettings() {
+  const themes = [['auto', '🌗 Auto', 'follow my phone'], ['light', '☀️ Light', 'blush'], ['dark', '🌙 Dark', 'dusk']];
+  app.innerHTML = `
+    <div class="page-top">
+      <button class="btn-icon" data-act="back" aria-label="Back">‹</button>
+      <h1>Settings</h1>
+    </div>
+
+    <div class="card">
+      <div class="field-label">🎨 Theme</div>
+      <div class="chip-row" data-theme-row>
+        ${themes.map(([v, label]) => `<button class="chip ${S.theme === v ? 'on' : ''}" data-theme="${v}">${label}</button>`).join('')}
+      </div>
+      <div class="field-label" style="margin-top:18px">🔔 Chimes &amp; vibration</div>
+      <div class="chip-row">
+        <button class="chip ${S.sound ? 'on' : ''}" data-sound="on">On</button>
+        <button class="chip ${!S.sound ? 'on' : ''}" data-sound="off">Off</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="field-label">💾 Your data</div>
+      <div style="color:var(--ink-soft);font-weight:600;font-size:0.88rem;line-height:1.5;margin-bottom:12px">
+        Everything lives on this device. Back up to a file you can keep or move to a new phone.
+      </div>
+      <button class="btn btn-soft btn-big" data-act="export">Back up my data</button>
+      <div style="height:10px"></div>
+      <button class="btn btn-ghost btn-big" data-act="import">Restore from a backup</button>
+      <input type="file" accept=".json,application/json" data-import-file style="display:none">
+    </div>
+  `;
+
+  app.onclick = (e) => {
+    const th = e.target.closest('[data-theme]');
+    if (th) {
+      S.theme = th.dataset.theme; save(); applyTheme();
+      $$('[data-theme]').forEach((c) => c.classList.toggle('on', c === th));
+      return;
+    }
+    const snd = e.target.closest('[data-sound]');
+    if (snd) {
+      S.sound = snd.dataset.sound === 'on'; save();
+      $$('[data-sound]').forEach((c) => c.classList.toggle('on', c === snd));
+      unlockAudio(); if (S.sound) chime('pop');
+      return;
+    }
+    const act = e.target.closest('[data-act]');
+    if (!act) return;
+    if (act.dataset.act === 'back') go('home');
+    if (act.dataset.act === 'export') exportBackup();
+    if (act.dataset.act === 'import') $('[data-import-file]').click();
+  };
+
+  $('[data-import-file]').onchange = (e) => {
+    const f = e.target.files[0];
+    if (f) importBackup(f);
+    e.target.value = '';
+  };
+}
+
+/* ===================================================================
    ROUTINES
    =================================================================== */
 function renderRoutines() {
@@ -1912,10 +2031,12 @@ setInterval(() => {
     S.lastTick = Date.now();
     save();
   }
+  const timerFinished = advanceTimers();
   if (route.page === 'live') {
     const ev = getEvent(route.id);
-    if (ev && ev.status === 'active') updateLive(ev);
+    if (ev && ev.status === 'active') { updateLive(ev); if (timerFinished) renderTimers(ev); }
   } else if (route.page === 'home') {
+    if (timerFinished) { renderHome(); return; }
     const cp = fmtClockParts(new Date());
     const c = $('[data-home-clock]');
     if (c) c.innerHTML = `${cp.time}<span class="ampm">${cp.ap}</span>`;
@@ -1926,8 +2047,15 @@ setInterval(() => {
       $('.n', el).textContent = fmtCount(cd.secs);
       $('.lbl', el).textContent = cd.secs < 0 ? cd.past : cd.until;
     });
+    $$('[data-timer-count]').forEach((el) => {
+      for (const ev of S.events) {
+        const t = (ev.timers || []).find((x) => x.id === el.dataset.timerCount);
+        if (t) { el.textContent = fmtCount(Math.ceil((t.endAt - Date.now()) / 1000)); break; }
+      }
+    });
   }
 }, 1000);
 
+applyTheme();
 checkAway();
 render();
