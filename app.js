@@ -284,7 +284,20 @@ function newEvent() {
 }
 
 function makeTask(name, estMins) {
-  return { id: uid(), name, icon: guessIcon(name), estMins, done: false, spentSecs: 0, actualSecs: null };
+  return { id: uid(), name, icon: guessIcon(name), estMins, done: false, optional: false, spentSecs: 0, actualSecs: null };
+}
+
+const TRAVEL_PRESETS = [0, 10, 15, 20, 30, 45, 60];
+/** Shared travel-time picker (chips + custom minutes). `attr` is the data-key
+    used to dispatch ('travel' in the editor, 'ltravel' in the live panel). */
+function travelRowHTML(ev, attr) {
+  const m = Number(ev.travelMins) || 0;
+  const isCustom = !TRAVEL_PRESETS.includes(m);
+  return `
+    ${TRAVEL_PRESETS.map((p) =>
+      `<button class="chip chip-green ${m === p ? 'on' : ''}" data-${attr}="${p}">${p === 0 ? 'None' : fmtDur(p)}</button>`).join('')}
+    <input class="dur-custom" data-${attr}-custom type="number" inputmode="numeric" min="1" max="240"
+      placeholder="…m" value="${isCustom ? m : ''}" aria-label="Custom travel minutes">`;
 }
 
 function reconcileCurrent(ev) {
@@ -408,7 +421,20 @@ function finishEvent(ev) {
   ev.status = 'done';
   ev.finishedAt = Date.now();
   ev.resultSlackSecs = (leaveAt(ev).getTime() - Date.now()) / 1000;
+  recordOutcomes(ev);
   learnFromEvent(ev);
+}
+
+/** Track how often each task gets planned vs. actually skipped, so the pace
+    page can surface where she's consistently over-planning. */
+function recordOutcomes(ev) {
+  for (const t of ev.tasks) {
+    const key = t.name.trim().toLowerCase();
+    if (!key) continue;
+    const h = S.history[key] || (S.history[key] = { name: t.name.trim(), icon: t.icon, estMins: t.estMins, count: 0, seed: true });
+    h.seen = (h.seen || 0) + 1;
+    if (!t.done) h.skipped = (h.skipped || 0) + 1;
+  }
 }
 
 /** The quiet superpower: remember how long things ACTUALLY take. */
@@ -436,10 +462,28 @@ function noteTaskUsed(name, estMins, icon) {
   if (!key) return;
   if (!S.history[key]) S.history[key] = { name: name.trim(), icon, estMins, count: 0, seed: true };
 }
-function presetList() {
-  return Object.values(S.history)
-    .sort((a, b) => (b.count - a.count) || a.name.localeCompare(b.name))
-    .slice(0, 14);
+/** Suggestions for the add bar. Empty query → most-used / most-recent first.
+    While typing → names that match, prefix matches before substring, each with
+    its learned timing. */
+function suggestionsFor(query) {
+  const q = (query || '').trim().toLowerCase();
+  const all = Object.values(S.history);
+  if (!q) {
+    return all
+      .sort((a, b) => (b.count - a.count) || ((b.lastAt || 0) - (a.lastAt || 0)) || a.name.localeCompare(b.name))
+      .slice(0, 12);
+  }
+  return all
+    .filter((h) => h.name.toLowerCase().includes(q))
+    .sort((a, b) => {
+      const ap = a.name.toLowerCase().startsWith(q) ? 0 : 1;
+      const bp = b.name.toLowerCase().startsWith(q) ? 0 : 1;
+      return (ap - bp) || (b.count - a.count) || a.name.localeCompare(b.name);
+    })
+    .slice(0, 8);
+}
+function presetChipHTML(p) {
+  return `<button class="chip" data-preset="${esc(p.name)}">${p.icon} ${esc(p.name)} · ${fmtDur(p.estMins)}${p.count > 0 ? ' ✨' : ''}</button>`;
 }
 function suggestEst(name) {
   const h = S.history[name.trim().toLowerCase()];
@@ -460,7 +504,7 @@ function render() {
   app.classList.remove('page-enter');
   void app.offsetWidth; // restart animation
   app.classList.add('page-enter');
-  app.classList.toggle('has-dock', route.page === 'live');
+  app.classList.remove('has-dock');
   switch (route.page) {
     case 'home': renderHome(); break;
     case 'edit': renderEdit(); break;
@@ -536,14 +580,14 @@ function renderHome() {
       <div class="card empty" style="padding:18px">Save a routine after you finish getting ready —<br>next time it's one tap. 🌿</div>`}
     ${S.routines.length ? `<button class="btn-link" data-act="manage-routines">Manage routines</button>` : ''}
 
-    ${Object.values(S.history).some((h) => h.count > 0) ? `
+    ${Object.values(S.history).some((h) => h.count > 0 || h.skipped > 0) ? `
       <div class="section-label">My pace</div>
       <button class="event-card" data-act="insights" style="padding:14px 18px">
         <div class="ev-row1">
           <span class="ev-emoji" style="background:var(--lav)">⏱️</span>
           <span style="min-width:0">
             <div class="ev-name">What things really take</div>
-            <div class="ev-meta">learned from your timed routines</div>
+            <div class="ev-meta">timings &amp; what you tend to skip</div>
           </span>
           <span style="margin-left:auto;color:var(--ink-faint)">›</span>
         </div>
@@ -557,10 +601,11 @@ function renderHome() {
       <div class="card" style="padding:8px 16px">
         ${past.map((ev) => {
           const ok = ev.resultSlackSecs >= 0;
+          const skipN = ev.tasks.filter((t) => !t.done).length;
           return `<div class="past-row" data-past-id="${ev.id}">
             <button class="past-open" data-act="open-summary" data-id="${ev.id}" aria-label="View details">
               <span>${ev.icon}</span>
-              <span class="past-name">${esc(ev.name || 'Getting ready')}</span>
+              <span class="past-name">${esc(ev.name || 'Getting ready')}${skipN ? ` <span style="color:var(--ink-faint);font-weight:600">· skipped ${skipN}</span>` : ''}</span>
               <span class="badge ${ok ? 'ok' : 'late'}">${ok ? `${fmtMinsLoose(ev.resultSlackSecs)} early 🎉` : `${fmtMinsLoose(ev.resultSlackSecs)} late`}</span>
             </button>
             <button class="past-del" data-act="del-past" data-id="${ev.id}" aria-label="Delete this">×</button>
@@ -679,21 +724,24 @@ function taskRowsHTML(tasks, opts = {}) {
       timeline = `<span class="est-pill">${fmtDur(t.estMins)}</span>`;
     }
     return `
-      <div class="t-row ${t.done ? 'done-row' : ''}" data-task="${t.id}">
+      <div class="t-row ${t.done ? 'done-row' : ''} ${t.optional ? 'optional' : ''}" data-task="${t.id}">
         ${t.done ? '' : `<button class="drag-handle" data-drag aria-label="Reorder">⠿</button>`}
         <span class="t-icon">${t.icon}</span>
         <div class="t-main" data-taprow>
-          <div class="t-name">${esc(t.name)}</div>
+          <div class="t-name">${esc(t.name)}<span class="opt-tag"> · if time</span></div>
           <div class="t-time">${timeline}</div>
         </div>
         ${opts.noCheck ? '' : `<button class="t-check" data-check aria-label="Done">✓</button>`}
         <div class="t-actions">
+          ${t.done ? '' : `<input class="name-input" data-name-input type="text" value="${esc(t.name)}" placeholder="Task name" aria-label="Task name">`}
           <button class="chip" data-est="-5">−5</button>
           <button class="chip" data-est="-1">−1</button>
           <input class="est-input" data-est-input type="number" inputmode="numeric" min="1" max="240" value="${t.estMins}" aria-label="Minutes">
           <button class="chip" data-est="1">＋1</button>
           <button class="chip" data-est="5">＋5</button>
           <input class="est-slider" data-est-slider type="range" min="1" max="60" step="1" value="${clamp(t.estMins, 1, 60)}" aria-label="Minutes slider">
+          ${t.done ? '' : `<button class="chip opt-toggle ${t.optional ? 'chip-green on' : ''}" data-optional>${t.optional ? '🫧 Optional' : 'Mark optional'}</button>`}
+          ${opts.live && !t.done ? `<button class="chip" data-donow>↑ Do now</button>` : ''}
           ${opts.live && !t.done ? `<button class="chip chip-green on" data-donext>Do next</button>` : ''}
           <button class="chip" data-del style="color:var(--coral-deep)">Remove</button>
         </div>
@@ -742,6 +790,17 @@ function bindTaskList(listEl, tasks, ev, opts = {}) {
       onChange('structure');
       return;
     }
+    if (e.target.closest('[data-optional]')) {
+      t.optional = !t.optional;
+      row.classList.toggle('optional', t.optional);
+      const btn = e.target.closest('[data-optional]');
+      btn.classList.toggle('chip-green', t.optional);
+      btn.classList.toggle('on', t.optional);
+      btn.textContent = t.optional ? '🫧 Optional' : 'Mark optional';
+      save();
+      onChange('times');
+      return;
+    }
     if (e.target.closest('[data-donext]')) {
       // move right after the current (first pending) task
       const pend = tasks.filter((x) => !x.done);
@@ -751,6 +810,21 @@ function bindTaskList(listEl, tasks, ev, opts = {}) {
       tasks.splice(at, 0, t);
       if (ev) reconcileCurrent(ev);
       save();
+      onChange('structure');
+      return;
+    }
+    if (e.target.closest('[data-donow]')) {
+      // promote to the very front — it becomes the current task; the one that
+      // was running keeps its banked time and slides to second
+      const pend = tasks.filter((x) => !x.done);
+      if (pend[0] !== t) {
+        tasks.splice(tasks.indexOf(t), 1);
+        const newFirst = tasks.filter((x) => !x.done)[0];
+        const at = newFirst ? tasks.indexOf(newFirst) : tasks.length;
+        tasks.splice(at, 0, t);
+        if (ev) reconcileCurrent(ev);
+        save();
+      }
       onChange('structure');
       return;
     }
@@ -774,6 +848,13 @@ function bindTaskList(listEl, tasks, ev, opts = {}) {
     } else if (e.target.matches('[data-est-slider]')) {
       t.estMins = Number(e.target.value);
       syncRowEst(row, t, 'slider');
+    } else if (e.target.matches('[data-name-input]')) {
+      t.name = e.target.value;
+      if (t.name.trim()) t.icon = guessIcon(t.name);
+      const nameEl = $('.t-name', row);
+      if (nameEl) nameEl.innerHTML = `${esc(t.name)}<span class="opt-tag"> · if time</span>`;
+      const iconEl = $('.t-icon', row);
+      if (iconEl) iconEl.textContent = t.icon;
     } else return;
     save();
     onChange('times');
@@ -858,9 +939,7 @@ function addBarHTML(opts = {}) {
   return `
     <div class="addbar">
       <div class="chip-scroll" data-presets>
-        ${presetList().map((p) => `
-          <button class="chip" data-preset="${esc(p.name)}">${p.icon} ${esc(p.name)} · ${fmtDur(p.estMins)}${p.count > 0 ? ' ✨' : ''}</button>
-        `).join('')}
+        ${suggestionsFor('').map(presetChipHTML).join('')}
       </div>
       <div class="add-input-row">
         <span class="add-emoji" data-add-emoji>🌷</span>
@@ -887,8 +966,13 @@ function bindAddBar(rootEl, ev, opts = {}) {
   let durExplicit = false;
   let pos = 'last';
 
+  const presetsEl = $('[data-presets]', rootEl);
+  function renderPresets() {
+    presetsEl.innerHTML = suggestionsFor(input.value).map(presetChipHTML).join('');
+  }
   input.oninput = () => {
     emojiEl.textContent = input.value.trim() ? guessIcon(input.value) : '🌷';
+    renderPresets();
     if (!durExplicit) {
       const sug = suggestEst(input.value);
       if (sug) setDur(sug, false);
@@ -938,6 +1022,7 @@ function bindAddBar(rootEl, ev, opts = {}) {
     input.value = '';
     emojiEl.textContent = '🌷';
     durExplicit = false;
+    renderPresets();
     input.focus();
   }
   function addTask(name, estMins, icon) {
@@ -987,10 +1072,7 @@ function renderEdit() {
         <button class="chip ${ev.date === tomorrow ? 'on' : ''}" data-day="tomorrow">Tomorrow</button>
       </div>
       <div class="field-label" style="margin-top:18px">🚗 Travel time</div>
-      <div class="chip-row" data-travel-row>
-        ${[0, 10, 15, 20, 30, 45, 60].map((m) =>
-          `<button class="chip chip-green ${Number(ev.travelMins) === m ? 'on' : ''}" data-travel="${m}">${m === 0 ? 'None' : fmtDur(m)}</button>`).join('')}
-      </div>
+      <div class="chip-row" data-travel-row>${travelRowHTML(ev, 'travel')}</div>
       <div class="derived-line" data-derived></div>
     </div>
 
@@ -1057,6 +1139,14 @@ function renderEdit() {
     $('[data-ev-emoji]').textContent = ev.icon;
     save();
   };
+  $('[data-travel-custom]').oninput = (e) => {
+    const v = parseInt(e.target.value, 10);
+    if (!(v >= 0)) return;
+    ev.travelMins = clamp(v, 0, 600);
+    $$('[data-travel]').forEach((c) => c.classList.remove('on'));
+    $('[data-time-label]').textContent = terms(ev).timeLabel;
+    save(); refreshDerived();
+  };
   $('[data-time]').onchange = (e) => {
     if (e.target.value) ev.time = e.target.value;
     // picking a time that's already passed today means tomorrow (an 12:30 AM
@@ -1084,6 +1174,7 @@ function renderEdit() {
     if (tr) {
       ev.travelMins = Number(tr.dataset.travel);
       $$('[data-travel]').forEach((c) => c.classList.toggle('on', c === tr));
+      const custom = $('[data-travel-custom]'); if (custom) custom.value = '';
       $('[data-time-label]').textContent = terms(ev).timeLabel;
       save(); refreshDerived(); return;
     }
@@ -1255,10 +1346,7 @@ function renderLive() {
       <div class="field-label" data-panel-label>${T.timeLabel}</div>
       <input class="time-input" data-live-time type="time" value="${ev.time}">
       <div class="field-label" style="margin-top:16px">🚗 Travel time</div>
-      <div class="chip-row">
-        ${[0, 10, 15, 20, 30, 45, 60].map((m) =>
-          `<button class="chip chip-green ${Number(ev.travelMins) === m ? 'on' : ''}" data-ltravel="${m}">${m === 0 ? 'None' : fmtDur(m)}</button>`).join('')}
-      </div>
+      <div class="chip-row">${travelRowHTML(ev, 'ltravel')}</div>
       <div class="field-label" style="margin-top:16px">⏰ Or nudge the whole plan</div>
       <div class="chip-row">
         <button class="chip" data-push="5">＋5m later</button>
@@ -1291,6 +1379,7 @@ function renderLive() {
     <div class="card live-list-card">
       <div class="section-label" style="margin:10px 4px 4px">Up next</div>
       <div class="t-list" data-tlist></div>
+      <div class="addbar-inline" data-addbar>${addBarHTML({ live: true })}</div>
       <div class="done-section" data-done-section>
         <button class="done-toggle" data-done-toggle>
           <span>✓ Done</span><span data-done-count></span><span class="arrow">▾</span>
@@ -1302,8 +1391,6 @@ function renderLive() {
     <div style="text-align:center;margin-top:4px">
       <button class="btn-link btn-danger-link" data-act="cancel-session">Cancel &amp; discard this session</button>
     </div>
-
-    <div class="dock"><div class="dock-inner" data-addbar>${addBarHTML({ live: true })}</div></div>
   `;
 
   const structure = () => {
@@ -1337,6 +1424,17 @@ function renderLive() {
     save();
     updateLive(ev);
   };
+  $('[data-time-panel]').addEventListener('input', (e) => {
+    if (!e.target.matches('[data-ltravel-custom]')) return;
+    const v = parseInt(e.target.value, 10);
+    if (!(v >= 0)) return;
+    ev.travelMins = clamp(v, 0, 600);
+    $$('[data-ltravel]').forEach((c) => c.classList.remove('on'));
+    $('[data-panel-label]').textContent = terms(ev).timeLabel;
+    resetChimeFlags(ev);
+    save();
+    updateLive(ev);
+  });
 
   app.onclick = (e) => {
     const td = e.target.closest('[data-tdur]');
@@ -1361,6 +1459,7 @@ function renderLive() {
     if (tr) {
       ev.travelMins = Number(tr.dataset.ltravel);
       $$('[data-ltravel]').forEach((c) => c.classList.toggle('on', c === tr));
+      const lc = $('[data-ltravel-custom]'); if (lc) lc.value = '';
       $('[data-panel-label]').textContent = terms(ev).timeLabel;
       resetChimeFlags(ev);
       save();
@@ -1723,6 +1822,8 @@ function renderSummary() {
   const T = terms(ev);
   const doneTasks = ev.tasks.filter((t) => t.done && !t.untimed);
   const earlyTasks = ev.tasks.filter((t) => t.done && t.untimed);
+  const skippedTasks = ev.tasks.filter((t) => !t.done);
+  const missedEssential = skippedTasks.filter((t) => !t.optional);
   const totalActual = doneTasks.reduce((s, t) => s + (t.actualSecs || 0), 0);
   const maxSecs = Math.max(...doneTasks.map((t) => Math.max(t.actualSecs || 0, t.estMins * 60)), 1);
 
@@ -1781,6 +1882,21 @@ function renderSummary() {
       </div>
     </div>` : ''}
 
+    ${skippedTasks.length ? `
+    <div class="card">
+      <div class="field-label">Didn't get to · ${fmtDur(skippedTasks.reduce((s, t) => s + t.estMins, 0))} planned</div>
+      ${skippedTasks.map((t) => `
+        <div class="cmp-row" style="display:flex;align-items:center;gap:8px">
+          <span>${t.icon}</span><span style="font-weight:700">${esc(t.name)}</span>
+          <span style="margin-left:auto;font-size:0.82rem;font-weight:700" class="${t.optional ? 'diff-under' : 'diff-over'}">${t.optional ? '🫧 optional' : 'wanted to do'} · ${fmtDur(t.estMins)}</span>
+        </div>`).join('')}
+      <div style="color:var(--ink-faint);font-weight:600;font-size:0.82rem;margin-top:10px;line-height:1.5">
+        ${missedEssential.length
+          ? `You ran out of time for ${missedEssential.length} thing${missedEssential.length === 1 ? '' : 's'} you wanted to do — worth trimming the plan or starting earlier next time. 💕`
+          : 'Only the "if time" extras got dropped — that\'s a realistic plan. 🌿'}
+      </div>
+    </div>` : ''}
+
     <div class="footer-cta">
       <button class="btn btn-green btn-big" data-act="save-routine">Save as a routine 🌿</button>
       <div style="height:10px"></div>
@@ -1804,8 +1920,8 @@ function renderSummary() {
    =================================================================== */
 function renderInsights() {
   const entries = Object.values(S.history)
-    .filter((h) => h.count > 0)
-    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0));
+    .filter((h) => h.count > 0 || h.skipped > 0)
+    .sort((a, b) => (b.lastAt || 0) - (a.lastAt || 0) || (b.seen || 0) - (a.seen || 0));
 
   app.innerHTML = `
     <div class="page-top">
@@ -1819,11 +1935,13 @@ function renderInsights() {
           <span class="t-icon">${h.icon}</span>
           <div class="t-main">
             <div class="t-name">${esc(h.name)}</div>
-            <div class="t-time">timed ${h.count} time${h.count === 1 ? '' : 's'}${h.samples && h.samples.length > 1 ? ` · recently: ${h.samples.slice(-5).map((m) => m + 'm').join(', ')}` : ''}</div>
+            <div class="t-time">${h.count > 0 ? `timed ${h.count}×` : 'not timed yet'}${h.samples && h.samples.length > 1 ? ` · ${h.samples.slice(-5).map((m) => m + 'm').join(', ')}` : ''}${h.skipped > 0 ? ` · <span class="diff-over">skipped ${h.skipped}/${h.seen || h.skipped}×</span>` : ''}</div>
           </div>
           <span class="ins-avg">~${fmtDur(h.estMins)}</span>
           <div class="ins-actions">
-            <span style="color:var(--ink-faint);font-size:0.8rem;font-weight:600;flex:1">This is what new "${esc(h.name)}" tasks will suggest.</span>
+            <span style="color:var(--ink-faint);font-size:0.8rem;font-weight:600;flex:1">${h.skipped > 0 && h.seen && h.skipped >= h.seen / 2
+              ? `Often planned but skipped — maybe a "🫧 optional" task.`
+              : `What new "${esc(h.name)}" tasks will suggest.`}</span>
             <button class="chip" data-forget="${esc(h.name.toLowerCase())}" style="color:var(--coral-deep)">Forget</button>
           </div>
         </div>`).join('')}
