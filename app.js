@@ -190,7 +190,7 @@ function targetAt(ev) {
 function leaveAt(ev) {
   return new Date(targetAt(ev).getTime() - (Number(ev.travelMins) || 0) * 60000);
 }
-function pendingTasks(ev) { return ev.tasks.filter((t) => !t.done); }
+function pendingTasks(ev) { return ev.tasks.filter((t) => !t.done && !t.skipped); }
 function totalEstMins(tasks) { return tasks.reduce((s, t) => s + (t.done ? 0 : t.estMins), 0); }
 
 function curSpentSecs(ev) {
@@ -284,7 +284,7 @@ function newEvent() {
 }
 
 function makeTask(name, estMins) {
-  return { id: uid(), name, icon: guessIcon(name), estMins, done: false, optional: false, spentSecs: 0, actualSecs: null };
+  return { id: uid(), name, icon: guessIcon(name), estMins, done: false, skipped: false, optional: false, spentSecs: 0, actualSecs: null };
 }
 
 const TRAVEL_PRESETS = [0, 10, 15, 20, 30, 45, 60];
@@ -413,7 +413,28 @@ function uncompleteTask(ev, taskId) {
   t.done = false;
   t.actualSecs = null;
   t.untimed = false;
+  t.skipped = false; // restoring a done/skipped task puts it back in the queue
   reconcileCurrent(ev);
+  save();
+}
+
+/** Skip a task: move past it without marking it done. Unlike Remove it stays
+    on the record (shows in the summary, counts toward skip insights); its time
+    is freed from the rest of the schedule and nothing is learned from it. */
+function skipTask(ev, taskId) {
+  const t = ev.tasks.find((x) => x.id === taskId);
+  if (!t || t.done || t.skipped) return;
+  t.skipped = true;
+  t.skippedAt = Date.now();
+  t.actualSecs = null;
+  buzz(35);
+  reconcileCurrent(ev);
+  if (pendingTasks(ev).length === 0 && ev.status === 'active') {
+    finishEvent(ev);
+    save();
+    go('summary', { id: ev.id });
+    return;
+  }
   save();
 }
 
@@ -710,7 +731,9 @@ function taskRowsHTML(tasks, opts = {}) {
   return tasks.map((t) => {
     const proj = projByTask[t.id];
     let timeline = '';
-    if (t.done && t.untimed) {
+    if (t.skipped) {
+      timeline = `<span class="diff-over">↷ skipped · was ${fmtDur(t.estMins)}</span>`;
+    } else if (t.done && t.untimed) {
       timeline = `<span class="diff-under">done ahead of time ✓</span>`;
     } else if (t.done) {
       const actual = Math.round((t.actualSecs || 0) / 60);
@@ -724,8 +747,8 @@ function taskRowsHTML(tasks, opts = {}) {
       timeline = `<span class="est-pill">${fmtDur(t.estMins)}</span>`;
     }
     return `
-      <div class="t-row ${t.done ? 'done-row' : ''} ${t.optional ? 'optional' : ''}" data-task="${t.id}">
-        ${t.done ? '' : `<button class="drag-handle" data-drag aria-label="Reorder">⠿</button>`}
+      <div class="t-row ${t.done ? 'done-row' : ''} ${t.skipped ? 'skipped-row' : ''} ${t.optional ? 'optional' : ''}" data-task="${t.id}">
+        ${(t.done || t.skipped) ? '' : `<button class="drag-handle" data-drag aria-label="Reorder">⠿</button>`}
         <span class="t-icon">${t.icon}</span>
         <div class="t-main" data-taprow>
           <div class="t-name">${esc(t.name)}<span class="opt-tag"> · if time</span></div>
@@ -733,16 +756,17 @@ function taskRowsHTML(tasks, opts = {}) {
         </div>
         ${opts.noCheck ? '' : `<button class="t-check" data-check aria-label="Done">✓</button>`}
         <div class="t-actions">
-          ${t.done ? '' : `<input class="name-input" data-name-input type="text" value="${esc(t.name)}" placeholder="Task name" aria-label="Task name">`}
+          ${(t.done || t.skipped) ? '' : `<input class="name-input" data-name-input type="text" value="${esc(t.name)}" placeholder="Task name" aria-label="Task name">`}
           <button class="chip" data-est="-5">−5</button>
           <button class="chip" data-est="-1">−1</button>
           <input class="est-input" data-est-input type="number" inputmode="numeric" min="1" max="240" value="${t.estMins}" aria-label="Minutes">
           <button class="chip" data-est="1">＋1</button>
           <button class="chip" data-est="5">＋5</button>
           <input class="est-slider" data-est-slider type="range" min="1" max="60" step="1" value="${clamp(t.estMins, 1, 60)}" aria-label="Minutes slider">
-          ${t.done ? '' : `<button class="chip opt-toggle ${t.optional ? 'chip-green on' : ''}" data-optional>${t.optional ? '🫧 Optional' : 'Mark optional'}</button>`}
-          ${opts.live && !t.done ? `<button class="chip" data-donow>↑ Do now</button>` : ''}
-          ${opts.live && !t.done ? `<button class="chip chip-green on" data-donext>Do next</button>` : ''}
+          ${(t.done || t.skipped) ? '' : `<button class="chip opt-toggle ${t.optional ? 'chip-green on' : ''}" data-optional>${t.optional ? '🫧 Optional' : 'Mark optional'}</button>`}
+          ${opts.live && !t.done && !t.skipped ? `<button class="chip" data-donow>↑ Do now</button>` : ''}
+          ${opts.live && !t.done && !t.skipped ? `<button class="chip chip-green on" data-donext>Do next</button>` : ''}
+          ${opts.live && !t.done && !t.skipped ? `<button class="chip" data-skip>Skip ↷</button>` : ''}
           <button class="chip" data-del style="color:var(--coral-deep)">Remove</button>
         </div>
       </div>`;
@@ -759,7 +783,7 @@ function bindTaskList(listEl, tasks, ev, opts = {}) {
 
     if (e.target.closest('[data-check]')) {
       if (ev) {
-        if (t.done) uncompleteTask(ev, t.id);
+        if (t.done || t.skipped) uncompleteTask(ev, t.id);
         else {
           e.target.closest('[data-check]').classList.add('checked', 'pop-done');
           setTimeout(() => completeTask(ev, t.id) || onChange('structure'), 160);
@@ -787,6 +811,11 @@ function bindTaskList(listEl, tasks, ev, opts = {}) {
       tasks.splice(tasks.indexOf(t), 1);
       if (ev) reconcileCurrent(ev);
       save();
+      onChange('structure');
+      return;
+    }
+    if (e.target.closest('[data-skip]')) {
+      if (ev) skipTask(ev, t.id);
       onChange('structure');
       return;
     }
@@ -1382,7 +1411,7 @@ function renderLive() {
       <div class="addbar-inline" data-addbar>${addBarHTML({ live: true })}</div>
       <div class="done-section" data-done-section>
         <button class="done-toggle" data-done-toggle>
-          <span>✓ Done</span><span data-done-count></span><span class="arrow">▾</span>
+          <span data-done-label>✓ Done</span>&nbsp;<span data-done-count></span><span class="arrow">▾</span>
         </button>
         <div class="done-body"><div class="t-list" data-donelist></div></div>
       </div>
@@ -1546,6 +1575,13 @@ function renderLive() {
         if (ev.status === 'active') structure();
       }
     }
+    if (act.dataset.act === 'hero-skip') {
+      const cur = pendingTasks(ev)[0];
+      if (cur) {
+        skipTask(ev, cur.id);
+        if (ev.status === 'active') structure();
+      }
+    }
     if (act.dataset.act === 'hero-later') {
       const pend = pendingTasks(ev);
       if (pend.length > 1) {
@@ -1621,6 +1657,7 @@ function renderHero(ev) {
         <div class="hero-btns">
           <button class="btn btn-primary" style="flex:1" data-act="hero-resume">Resume ▶</button>
           <button class="btn btn-ghost" data-act="hero-done">Done ✓</button>
+          <button class="btn btn-ghost" data-act="hero-skip">Skip ↷</button>
         </div>
         ${ev.creditBack && ev.creditBack.secs >= 30
           ? `<button class="pause-link" data-act="count-away">Actually, I was — count that ${fmtMinsLoose(ev.creditBack.secs)} ↩</button>`
@@ -1646,8 +1683,11 @@ function renderHero(ev) {
       <div class="hero-bar"><div class="hero-fill" data-hero-fill></div></div>
       <div class="hero-btns">
         <button class="btn btn-green" data-act="hero-done">Done ✓</button>
-        <button class="btn btn-ghost" data-act="hero-plus5">+5m</button>
-        <button class="btn btn-ghost" data-act="hero-later">Later ↓</button>
+      </div>
+      <div class="hero-btns" style="margin-top:10px">
+        <button class="btn btn-ghost" style="flex:1" data-act="hero-plus5">+5m</button>
+        <button class="btn btn-ghost" style="flex:1" data-act="hero-later">Later ↓</button>
+        <button class="btn btn-ghost" style="flex:1" data-act="hero-skip">Skip ↷</button>
       </div>
       <button class="pause-link" data-act="hero-pause">⏸ Stepping away for a while? Pause the timer</button>
     </div>`;
@@ -1677,7 +1717,8 @@ function renderTimers(ev) {
 function renderUpNext(ev) {
   const pend = pendingTasks(ev);
   const upcoming = pend.slice(1);
-  const done = ev.tasks.filter((t) => t.done);
+  const finished = ev.tasks.filter((t) => t.done || t.skipped);
+  const skippedN = finished.filter((t) => t.skipped).length;
   const sch = computeSchedule(ev);
   $('[data-tlist]').innerHTML = upcoming.length
     ? taskRowsHTML(upcoming, { schRows: sch.rows, live: true })
@@ -1688,9 +1729,11 @@ function renderUpNext(ev) {
     renderHero(ev); renderUpNext(ev); updateLive(ev);
   };
   bindTaskList($('[data-tlist]'), ev.tasks, ev, { onChange: liveOnChange });
-  $('[data-done-count]').textContent = done.length;
-  $('[data-done-section]').style.display = done.length ? '' : 'none';
-  $('[data-donelist]').innerHTML = taskRowsHTML(done, {});
+  const doneLabel = $('[data-done-label]');
+  if (doneLabel) doneLabel.textContent = skippedN ? '✓ Done & skipped' : '✓ Done';
+  $('[data-done-count]').textContent = finished.length;
+  $('[data-done-section]').style.display = finished.length ? '' : 'none';
+  $('[data-donelist]').innerHTML = taskRowsHTML(finished, {});
   bindTaskList($('[data-donelist]'), ev.tasks, ev, { onChange: liveOnChange });
 }
 
@@ -1823,7 +1866,8 @@ function renderSummary() {
   const doneTasks = ev.tasks.filter((t) => t.done && !t.untimed);
   const earlyTasks = ev.tasks.filter((t) => t.done && t.untimed);
   const skippedTasks = ev.tasks.filter((t) => !t.done);
-  const missedEssential = skippedTasks.filter((t) => !t.optional);
+  // "ran out of time" = essential tasks never reached (a deliberate skip was a choice, not a time problem)
+  const missedEssential = skippedTasks.filter((t) => !t.optional && !t.skipped);
   const totalActual = doneTasks.reduce((s, t) => s + (t.actualSecs || 0), 0);
   const maxSecs = Math.max(...doneTasks.map((t) => Math.max(t.actualSecs || 0, t.estMins * 60)), 1);
 
@@ -1888,7 +1932,7 @@ function renderSummary() {
       ${skippedTasks.map((t) => `
         <div class="cmp-row" style="display:flex;align-items:center;gap:8px">
           <span>${t.icon}</span><span style="font-weight:700">${esc(t.name)}</span>
-          <span style="margin-left:auto;font-size:0.82rem;font-weight:700" class="${t.optional ? 'diff-under' : 'diff-over'}">${t.optional ? '🫧 optional' : 'wanted to do'} · ${fmtDur(t.estMins)}</span>
+          <span style="margin-left:auto;font-size:0.82rem;font-weight:700" class="${t.optional ? 'diff-under' : 'diff-over'}">${t.skipped ? '↷ skipped' : t.optional ? '🫧 optional' : 'wanted to do'} · ${fmtDur(t.estMins)}</span>
         </div>`).join('')}
       <div style="color:var(--ink-faint);font-weight:600;font-size:0.82rem;margin-top:10px;line-height:1.5">
         ${missedEssential.length

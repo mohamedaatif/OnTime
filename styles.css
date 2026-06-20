@@ -339,8 +339,9 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
 .t-row.done-row .t-check, .t-check.checked {
   background: var(--green-deep); border-color: var(--green-deep); color: #fff;
 }
-.t-row.done-row .t-name { text-decoration: line-through; color: var(--ink-faint); }
-.t-row.done-row .t-icon { opacity: 0.55; filter: grayscale(0.3); }
+.t-row.done-row .t-name, .t-row.skipped-row .t-name { text-decoration: line-through; color: var(--ink-faint); }
+.t-row.done-row .t-icon, .t-row.skipped-row .t-icon { opacity: 0.55; filter: grayscale(0.3); }
+.t-row.skipped-row .t-check { border-color: var(--coral-deep); color: var(--coral-deep); }
 .diff-over { color: var(--coral-deep); font-weight: 700; }
 .diff-under { color: var(--green-deep); font-weight: 700; }
 .opt-tag { display: none; color: var(--lav-deep); font-weight: 700; }
