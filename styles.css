@@ -686,22 +686,45 @@ h1, h2, h3 { font-family: var(--font-display); font-weight: 600; margin: 0; }
     radial-gradient(420px 420px at -6% 102%, rgba(124, 198, 156, 0.10), transparent 70%),
     radial-gradient(340px 340px at -10% 42%, rgba(177, 143, 235, 0.10), transparent 70%);
 }
-.is-dark .card, .is-dark .event-card, .is-dark .stat-tile { border-color: #443240; }
-.is-dark .routine-card { border-color: #324237; box-shadow: var(--shadow-sm); }
-.is-dark .event-card.active-ev { background: linear-gradient(135deg, var(--card) 30%, var(--pink-mist)); border-color: #5a3f50; }
-.is-dark .btn-ghost, .is-dark .chip, .is-dark .clock-bit, .is-dark .next-toggle, .is-dark .est-input, .is-dark .dur-custom, .is-dark .name-input { background: #3a2a36; border-color: #513c4b; }
-.is-dark .addbar-inline { border-top-color: #4a3743; }
+/* surfaces — a touch of border so cards read as raised on the dark bg */
+.is-dark .card, .is-dark .event-card, .is-dark .stat-tile { border-color: #4a3744; }
+.is-dark .routine-card { border-color: #34473b; box-shadow: var(--shadow-sm); }
+.is-dark .event-card.active-ev { background: linear-gradient(135deg, var(--card) 30%, var(--pink-mist)); border-color: #6b4a5d; }
+
+/* form controls & UNSELECTED chips share one dark surface + a clearly
+   visible border. Crucially this must NOT match `.on`, or it clobbers the
+   selected-chip colours below (equal specificity, later in source). */
+.is-dark .btn-ghost,
+.is-dark .clock-bit,
+.is-dark .next-toggle,
+.is-dark .est-input,
+.is-dark .dur-custom,
+.is-dark .name-input,
+.is-dark .add-input,
+.is-dark .time-input,
+.is-dark .chip:not(.on) { background: #3a2935; border-color: #6a5063; }
+
+/* selected chips stay vivid and legible (pink fill / green fill, white text) */
+.is-dark .chip.on { background: #d95f95; border-color: #d95f95; color: #fff; }
+.is-dark .chip-green.on { background: #4f9e72; border-color: #4f9e72; color: #fff; }
+.is-dark .next-toggle button.on { background: #3a6b52; color: #eafff3; }
+
+/* dividers & separators — visible, not muddy */
+.is-dark .addbar-inline { border-top-color: #6f5466; }
+.is-dark .t-row, .is-dark .past-row, .is-dark .cmp-row { border-bottom-color: #574252; }
+.is-dark .t-row.dragging { background: #3a2935; box-shadow: var(--shadow); }
+
 .is-dark .stat-tile { background: var(--card); }
-.is-dark .t-row, .is-dark .past-row, .is-dark .cmp-row { border-bottom-color: #4a3743; }
-.is-dark .t-check { background: #3a2a36; border-color: #5c4555; }
-.is-dark .t-row.done-row .t-check, .is-dark .t-check.checked { background: var(--green-deep); border-color: var(--green-deep); color: #14241b; }
-.is-dark .chip-green.on { color: #14241b; }
-.is-dark .hero-task { background: linear-gradient(150deg, #332432 40%, var(--pink-mist)); border-color: #553d4e; }
-.is-dark .hero-icon { background: #3f2d3b; }
-.is-dark .hero-bar { background: #463340; }
-.is-dark .clock-edit { border-color: #5a4050; }
+.is-dark .t-check { background: #3a2935; border-color: #735668; }
+.is-dark .t-row.done-row .t-check, .is-dark .t-check.checked { background: var(--green-deep); border-color: var(--green-deep); color: #15271d; }
+.is-dark .timer-chip { border-color: #5e4d76; }
+.is-dark .cmp-bar.est-b { background: #5e4c7e; }
+.is-dark .hero-task { background: linear-gradient(150deg, #3a2838 40%, var(--pink-mist)); border-color: #6b4a5d; }
+.is-dark .hero-icon { background: #43303f; }
+.is-dark .hero-bar { background: #4a3543; }
+.is-dark .clock-edit { border-color: #6b4a5d; }
 .is-dark .dock { background: linear-gradient(to top, rgba(34, 23, 33, 0.97) 65%, rgba(34, 23, 33, 0)); }
-.is-dark .dock-inner { background: rgba(46, 32, 41, 0.92); border-color: #553d4e; }
+.is-dark .dock-inner { background: rgba(46, 32, 41, 0.92); border-color: #6b4a5d; }
 
 /* ---------- reduced motion: calm everything, drop confetti ---------- */
 @media (prefers-reduced-motion: reduce) {
